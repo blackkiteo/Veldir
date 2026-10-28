@@ -1,0 +1,48 @@
+name: Veldir Windows Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-windows-x64:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt
+      - name: Rust versions
+        shell: pwsh
+        run: |
+          rustc --version
+          cargo --version
+      - name: Format code
+        run: cargo fmt --all
+      - name: Check compilation
+        run: cargo check --all-targets
+      - name: Run tests
+        run: cargo test --all-targets
+      - name: Release build
+        run: cargo build --release
+      - name: Generate checksum
+        shell: pwsh
+        run: |
+          Get-FileHash target\release\veldir.exe -Algorithm SHA256 | ForEach-Object {
+            "$($_.Hash.ToLowerInvariant()) *veldir.exe" | Out-File -FilePath target\release\SHA256SUMS.txt -Encoding ascii
+          }
+      - name: Upload EXE and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: Veldir-v0.2.0-Windows-x64
+          path: |
+            target/release/veldir.exe
+            target/release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30

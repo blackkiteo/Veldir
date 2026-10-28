@@ -424,11 +424,11 @@ impl Veldir {
         if shortcut(egui::Key::L) {
             self.editing_address = true;
             self.address_input = self.current().path.display().to_string();
-            ctx.memory_mut(|m| m.request_focus(egui::Id::new("address_bar")));
+            ctx.memory_mut(|m| m.request_focus(egui::Id::unique("address_bar")));
         }
         if shortcut(egui::Key::F) {
             let filter_id = if self.focused_right { "folder_filter_right" } else { "folder_filter" };
-            ctx.memory_mut(|m| m.request_focus(egui::Id::new(filter_id)));
+            ctx.memory_mut(|m| m.request_focus(egui::Id::unique(filter_id)));
         }
         if ctx.input(|i| i.key_pressed(egui::Key::F5)) { self.refresh(); }
         if ctx.input(|i| i.key_pressed(egui::Key::F6)) {
@@ -439,7 +439,7 @@ impl Veldir {
         if ctx.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::ArrowRight)) { self.history_forward(); }
         if ctx.input(|i| i.modifiers.alt && i.key_pressed(egui::Key::ArrowUp)) { self.up(); }
 
-        if !ctx.wants_keyboard_input() && !self.busy && matches!(self.dialog, Dialog::None) {
+        if !ctx.egui_wants_keyboard_input() && !self.busy && matches!(self.dialog, Dialog::None) {
             if shortcut(egui::Key::C) { self.clipboard_set(false); }
             if shortcut(egui::Key::X) { self.clipboard_set(true); }
             if shortcut(egui::Key::V) { self.paste(); }
@@ -489,7 +489,7 @@ impl Veldir {
             if self.editing_address {
                 let r = ui.add(egui::TextEdit::singleline(&mut self.address_input)
                     .desired_width(ui.available_width().max(270.0).min(600.0) * 0.52)
-                    .id(egui::Id::new("address_bar")));
+                    .id(egui::Id::unique("address_bar")));
                 if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     let target = PathBuf::from(self.address_input.trim());
                     self.navigate(target);
@@ -654,7 +654,7 @@ impl Veldir {
             let filter_width = if self.secondary.is_some() { 170.0 } else { 260.0 };
             let filter = &mut self.panel_mut(right).filter;
             ui.add(egui::TextEdit::singleline(filter)
-                .id(egui::Id::new(if right { "folder_filter_right" } else { "folder_filter" }))
+                .id(egui::Id::unique(if right { "folder_filter_right" } else { "folder_filter" }))
                 .hint_text("Nome o estensione")
                 .desired_width(filter_width));
             if ui.button("×").on_hover_text("Azzera filtro").clicked() { filter.clear(); }

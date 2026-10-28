@@ -1,0 +1,81 @@
+name: Import sources and build Veldir
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  import-source:
+    if: github.repository == 'blackkiteo/Veldir'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Verify and extract source bundle
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, io, pathlib, tarfile
+          pieces = [pathlib.Path(f"_bootstrap/part{i}.b64").read_text() for i in range(1, 6)]
+          raw = base64.b64decode(''.join(pieces), validate=True)
+          digest = hashlib.sha256(raw).hexdigest()
+          expected = '88559af526b9404b6837c3dd8e2575a0786b20a9071566ac4471c57dad76f1d3'
+          assert digest == expected, f"Unexpected source archive hash: {digest}"
+          with tarfile.open(fileobj=io.BytesIO(raw), mode='r:xz') as archive:
+              expected_paths = {
+                  'src/app.rs','src/fs_ops.rs','src/main.rs','Cargo.toml',
+                  '.github/workflows/windows.yml','.gitignore','README.md','LICENSE'
+              }
+              actual_paths = {m.name for m in archive.getmembers() if m.isfile()}
+              assert actual_paths == expected_paths, actual_paths
+              archive.extractall(path='.', filter='data')
+          print('Veldir source checksum verified; source files extracted')
+          PY
+      - name: Commit sources to repository
+        shell: bash
+        run: |
+          rm -rf _bootstrap
+          rm .github/workflows/bootstrap.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: publish Veldir 0.2.0 sources and Windows CI"
+          git push origin HEAD:main
+
+  build-windows:
+    needs: import-source
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt
+      - name: Check
+        run: cargo check --all-targets
+      - name: Tests
+        run: cargo test --all-targets
+      - name: Release build
+        run: cargo build --release
+      - name: Create checksum
+        shell: pwsh
+        run: |
+          Get-FileHash target\release\veldir.exe -Algorithm SHA256 | ForEach-Object {
+            "$($_.Hash.ToLowerInvariant()) *veldir.exe" | Out-File -FilePath target\release\SHA256SUMS.txt -Encoding ascii
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Veldir-v0.2.0-Windows-x64
+          path: |
+            target/release/veldir.exe
+            target/release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30

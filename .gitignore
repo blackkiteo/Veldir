@@ -1,6 +1,7 @@
-/target/
+/target
+.idea
+.vscode
+*.exe
+*.pdb
 *.log
-*.tmp
 .DS_Store
-Thumbs.db
-.idea/

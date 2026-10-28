@@ -418,17 +418,19 @@ impl Veldir {
     }
 
     fn keyboard(&mut self, ctx: &egui::Context) {
+        // Dialogs are modal: navigation and file shortcuts must not change their context.
+        if !matches!(self.dialog, Dialog::None) { return; }
         let shortcut = |key: egui::Key| ctx.input(|i| i.modifiers.command && i.key_pressed(key));
         if shortcut(egui::Key::T) { self.add_tab(self.current().path.clone()); }
         if shortcut(egui::Key::W) { let id = self.tabs[self.active].id; self.close_tab(id); }
         if shortcut(egui::Key::L) {
             self.editing_address = true;
             self.address_input = self.current().path.display().to_string();
-            ctx.memory_mut(|m| m.request_focus(egui::Id::unique("address_bar")));
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new("address_bar")));
         }
         if shortcut(egui::Key::F) {
             let filter_id = if self.focused_right { "folder_filter_right" } else { "folder_filter" };
-            ctx.memory_mut(|m| m.request_focus(egui::Id::unique(filter_id)));
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new(filter_id)));
         }
         if ctx.input(|i| i.key_pressed(egui::Key::F5)) { self.refresh(); }
         if ctx.input(|i| i.key_pressed(egui::Key::F6)) {
@@ -489,7 +491,7 @@ impl Veldir {
             if self.editing_address {
                 let r = ui.add(egui::TextEdit::singleline(&mut self.address_input)
                     .desired_width(ui.available_width().max(270.0).min(600.0) * 0.52)
-                    .id(egui::Id::unique("address_bar")));
+                    .id(egui::Id::new("address_bar")));
                 if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     let target = PathBuf::from(self.address_input.trim());
                     self.navigate(target);
@@ -652,12 +654,21 @@ impl Veldir {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Filtra").color(TEXT_MUTED));
             let filter_width = if self.secondary.is_some() { 170.0 } else { 260.0 };
-            let filter = &mut self.panel_mut(right).filter;
-            ui.add(egui::TextEdit::singleline(filter)
-                .id(egui::Id::unique(if right { "folder_filter_right" } else { "folder_filter" }))
+            let tab = self.panel_mut(right);
+            let changed = ui.add(egui::TextEdit::singleline(&mut tab.filter)
+                .id(egui::Id::new(if right { "folder_filter_right" } else { "folder_filter" }))
                 .hint_text("Nome o estensione")
-                .desired_width(filter_width));
-            if ui.button("×").on_hover_text("Azzera filtro").clicked() { filter.clear(); }
+                .desired_width(filter_width)).changed();
+            // Never leave hidden entries selected when a filter changes.
+            if changed {
+                tab.selected.clear();
+                tab.anchor = None;
+            }
+            if ui.button("×").on_hover_text("Azzera filtro").clicked() {
+                tab.filter.clear();
+                tab.selected.clear();
+                tab.anchor = None;
+            }
         });
         ui.add_space(6.0);
         self.files_ui(ui, right);
@@ -784,7 +795,7 @@ impl eframe::App for Veldir {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("◈ VELDIR").strong().size(18.0).color(ACCENT));
-            ui.label(RichText::new("0.2.0  ·  LIGHT FILE MANAGER").small().color(TEXT_MUTED));
+            ui.label(RichText::new("0.2.1  ·  LIGHT FILE MANAGER").small().color(TEXT_MUTED));
         });
         ui.add_space(8.0);
         self.tabs_ui(ui);

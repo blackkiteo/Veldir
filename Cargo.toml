@@ -1,0 +1,30 @@
+[package]
+name = "veldir"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.95"
+authors = ["Veldir contributors"]
+description = "A lightweight, keyboard-friendly file manager for Windows"
+license = "MIT"
+
+[dependencies]
+eframe = { version = "=0.37.0", default-features = false, features = ["default_fonts", "glow", "persistence", "clipboard"] }
+serde = { version = "1.0", features = ["derive"] }
+dirs-next = "2.0"
+trash = "5.2.9"
+opener = "0.9.0"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = "z"
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

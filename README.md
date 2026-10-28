@@ -1,10 +1,16 @@
-# Veldir v0.2.0 — file manager leggero per Windows
+# Veldir v0.2.1 — file manager leggero per Windows
 
 Prototipo **open source MIT** in Rust + egui, ispirato alla filosofia di File Pilot, con codice e identità indipendenti. **Non affiliato a File Pilot.**
 
-> **Stato reale: SORGENTI, NON BUILD VALIDATA.** Il pacchetto è stato revisionato staticamente, ma in questa sessione non erano disponibili `cargo`/`rustc` né accesso alla rete per installarli. Non è stato prodotto né verificato alcun EXE. Non usare su file importanti prima di aver eseguito i test Windows.
+> **Stato reale:** Veldir 0.2.0 ha completato con successo compilazione, test e build release Windows su GitHub Actions il 28 ottobre 2026 ([workflow](https://github.com/blackkiteo/Veldir/actions/runs/40631843489)). La 0.2.1 introduce correzioni al focus e alla selezione; usare solo l'artifact di una build con esito positivo. **Non è ancora stato eseguito un collaudo manuale della GUI Windows. Non usare su file importanti prima di quel collaudo.**
 
-## Novità della v0.2
+## Correzioni v0.2.1
+
+- Focus stabile dei campi indirizzo e ricerca: le scorciatoie Ctrl+L e Ctrl+F puntano a widget con ID persistenti.
+- Cambiando o azzerando il filtro vengono deselezionati tutti gli elementi, per evitare operazioni su file nascosti dal filtro.
+- Le scorciatoie da tastiera non cambiano cartelle o selezioni mentre è aperta una finestra di conferma.
+
+## Funzionalità introdotte nella v0.2
 
 - **Doppio pannello:** attivabile dalla barra superiore; il pannello di destra naviga in modo indipendente. La barra delle schede riguarda il pannello di sinistra.
 - **Selezione multipla:** clic per selezionare, Ctrl+clic per aggiungere/rimuovere, Maiusc+clic per selezionare un intervallo nell'elenco filtrato. Rinomina disponibile con un solo elemento selezionato.
@@ -32,7 +38,7 @@ Lo script invoca `cargo fmt --all`, `cargo check --all-targets`, `cargo test --a
 
 ### GitHub Actions
 
-Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Windows Build → Run workflow** viene compilata la versione Windows e, se tutti i controlli passano, viene pubblicato come artefatto `Veldir-v0.2.0-Windows-x64` con l'EXE e il suo SHA-256. Questo workflow **non è stato ancora eseguito né verificato**.
+Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Windows Build** viene compilata la versione Windows e, se tutti i controlli passano, viene pubblicato come artefatto `Veldir-v0.2.1-Windows-x64` con l'EXE e il suo SHA-256. La build v0.2.0 è stata verificata nella CI; **il collaudo manuale dell'interfaccia resta necessario**.
 
 ## Scorciatoie
 
@@ -50,7 +56,7 @@ Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Wind
 
 ## Limitazioni ancora aperte
 
-- **Build non verificata** su Windows, quindi l'interfaccia e l'integrazione del drop OS devono essere collaudate.
+- **Collaudo GUI non ancora eseguito** su Windows: navigazione, ricerca e integrazione del drop OS devono essere provate manualmente.
 - Il doppio pannello ha **larghezze automatiche**: non è ancora possibile trascinare il divisore per ridimensionarlo.
 - Nessuna drag & drop interno tra i pannelli, nessuna clipboard integrata nella Shell Windows; il drag & drop **in ingresso** è distinto da queste funzioni.
 - La modalità Taglia/Sposta tra volumi differenti **non è supportata** (mostra errore; non cancella la sorgente). Usa Copia e verifica i contenuti prima di spostare gli originali nel Cestino.

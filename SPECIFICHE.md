@@ -1,4 +1,4 @@
-# Veldir — specifiche tecniche v0.6.0
+# Veldir — specifiche tecniche v0.7.0
 
 ## Ambito
 Windows 10/11 x64. UI Rust + eframe/egui `=0.37.0` (renderer OpenGL/glow). Prototipo standalone senza Electron, account, telemetria o sincronizzazione in rete integrata. Licenza MIT.
@@ -39,6 +39,13 @@ Le operazioni batch non sono transazionali: se la destinazione cambia durante l'
 - Importazione dalla clipboard Windows ancora disponibile con dialogo di conferma.
 - Drag & drop solo tra pannelli egui di Veldir, con conferma di copia e nessuno spostamento automatico.
 - La clipboard interna supporta Taglia solo dentro Veldir. Compatibilità bidirezionale *completa* Shell non ancora disponibile.
+
+## Aggiornamento 0.7.0
+- `image_view.rs`: decodifica immagini limitata a 32 MiB / 30 MP, output RGBA a dimensione contenuta, eseguita in background.
+- `native_icons.rs`: acquisizione HICON Windows Shell per estensione, disegno con GDI su DIB RGBA, rilascio delle risorse native.
+- Cache GPU per icone per-estensione e massimo 128 miniature; caricamento lazy con massimo 6 richieste thumbnail e 4 richieste icone concorrenti.
+- Texture anteprima separata dai dettagli testuali; interruttore miniature persistente.
+- I risultati tardivi di un'anteprima precedente vengono scartati grazie al numero di generazione.
 
 ## Roadmap
 1. **0.2.1:** correzione focus e selezione, verifica CI Windows. Collaudo GUI ancora da eseguire.

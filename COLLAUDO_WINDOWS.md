@@ -1,4 +1,4 @@
-# Piano di collaudo Veldir 0.7.0 — Windows 10/11
+# Piano di collaudo Veldir 0.8.0 — Windows 10/11
 
 **Eseguire solo su file di prova, mai su dati importanti.** Il passaggio della CI non sostituisce un collaudo manuale della GUI e delle operazioni.
 
@@ -20,6 +20,15 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 | UI-02 | Chiudi e riapri Veldir dopo aver regolato il divisore | Le proporzioni sono ripristinate |
 | UI-03 | Nascondi la barra laterale e riapri | Stato della barra conservato |
 | UI-04 | Clicca su una cartella nella barra percorso | Navigazione immediata alla cartella scelta |
+| UI-05 | Apri 5-8 schede e passa tra loro | Etichette e tasti chiusura leggibili, scheda attiva riconoscibile |
+| UI-06 | Apri menu Operazioni e Visualizza | Tutte le funzioni esistenti raggiungibili senza sovrapposizioni |
+| UI-07 | Seleziona file di dimensioni diverse | Barra di stato mostra conteggio e dimensioni cumulativi |
+| UI-08 | Ridimensiona la finestra da 900 px a schermo intero | Barra degli indirizzi, menu e pannelli non si sovrappongono |
+| PDF-01 | Seleziona PDF testuale di una pagina e premi F3 | Numero pagine e contenuto iniziale, senza aprire il PDF |
+| PDF-02 | Seleziona PDF scansione senza testo | Messaggio che l'anteprima testuale non è disponibile |
+| PDF-03 | Seleziona PDF protetto o danneggiato | Errore non bloccante, possibilità di aprire col lettore esterno |
+| PDF-04 | Seleziona PDF oltre 12 MiB | Rifiuto controllato senza bloccare la UI |
+| PDF-05 | Seleziona PDF dopo foto e testo | Nessuna anteprima precedente rimane visibile |
 | SORT-01 | Clicca Nome, Dimensione e Modificato due volte | Ordinamento crescente/decrescente, cartelle sempre prime |
 | ICON-01 | Apri una cartella con PDF, JPG, DOCX, ZIP e cartelle | Icone associate ai tipi di Windows, senza blocchi |
 | ICON-02 | Cambia directory e torna alla precedente | Icone caricate da cache, UI responsiva |

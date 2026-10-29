@@ -1,4 +1,4 @@
-# Piano di collaudo Veldir 0.2 — Windows 10/11
+# Piano di collaudo Veldir 0.2.1 — Windows 10/11
 
 **Eseguire solo su file di prova, mai su dati importanti.** Il passaggio della CI non sostituisce un collaudo manuale della GUI e delle operazioni.
 
@@ -10,6 +10,11 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 | --- | --- | --- |
 | BUILD-01 | `cargo check`, `cargo test`, `cargo build --release` | Nessun errore ed EXE presente |
 | NAV-01 | Doppio clic su cartelle, Alt+frecce, Ctrl+L | Navigazione coerente, nessun crash |
+| FOCUS-01 | Ctrl+L, digitare un percorso valido e premere Invio | Il campo indirizzo riceve il focus e la navigazione avviene correttamente |
+| FOCUS-02 | Ctrl+F, digitare un nome | Il campo filtro del pannello attivo riceve il focus |
+| FILTER-01 | Selezionare più file, cambiare filtro, premere Canc | Le selezioni vengono azzerate: nessun elemento nascosto viene eliminato |
+| FILTER-02 | Selezionare file, azzerare filtro con × | Nessuna selezione residua |
+| MODAL-01 | Aprire conferma Cestino, premere Ctrl+W o Ctrl+T | La finestra rimane coerente e nessuna scheda viene chiusa/aperta |
 | PAN-01 | Attiva due pannelli e apri cartelle diverse | Navigazioni indipendenti |
 | PAN-02 | Cambia pannello con clic e F6 | Toolbar applicata al pannello attivo |
 | PAN-03 | Chiudi e riapri l'app in modalità doppia | Percorsi ripristinati |

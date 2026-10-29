@@ -1201,7 +1201,7 @@ impl Veldir {
         let now=SystemTime::now();
         let criteria=tab.criteria;
         let indices: Vec<usize> = tab.entries.iter().enumerate()
-            .filter(|(_, item)| filters::matches(item,&filter,criteria,now)
+            .filter(|(_, item)| filters::matches(item,&filter,criteria,now))
             .map(|(i, _)| i).collect();
         let count = indices.len();
         let dual = self.secondary.is_some();

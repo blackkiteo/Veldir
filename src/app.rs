@@ -3689,6 +3689,91 @@ mod tests {
     }
 
     #[test]
+    fn native_clipboard_events_route_to_file_actions() {
+        use super::{FileClipboardKeys, FileClipboardShortcut as Action};
+        let mut tracker = FileClipboardKeys::default();
+        assert_eq!(tracker.read(&[egui::Event::Copy], false), Some(Action::Copy));
+        assert_eq!(tracker.read(&[egui::Event::Cut], false), Some(Action::Cut));
+        assert_eq!(
+            tracker.read(&[egui::Event::Paste("some text".into())], false),
+            Some(Action::Paste)
+        );
+        assert_eq!(
+            tracker.read(&[egui::Event::Paste("some text".into())], true),
+            Some(Action::Import)
+        );
+    }
+
+    #[test]
+    fn file_only_windows_clipboard_pastes_on_swallowed_v_release_once() {
+        use super::{FileClipboardKeys, FileClipboardShortcut as Action};
+        let mut tracker = FileClipboardKeys::default();
+        let release = egui::Event::Key {
+            key: egui::Key::V,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                ctrl: true,
+                command: true,
+                ..Default::default()
+            },
+        };
+        assert_eq!(tracker.read(&[release.clone()], false), Some(Action::Paste));
+        // When the OS sends a real Paste event first, key-up must not paste twice.
+        assert_eq!(
+            tracker.read(&[egui::Event::Paste("text".into())], false),
+            Some(Action::Paste)
+        );
+        assert_eq!(tracker.read(&[release], false), None);
+    }
+
+    #[test]
+    fn typing_v_without_control_never_pastes_files() {
+        use super::FileClipboardKeys;
+        let mut tracker = FileClipboardKeys::default();
+        let key = |pressed| egui::Event::Key {
+            key: egui::Key::V,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        assert_eq!(tracker.read(&[key(true)], false), None);
+        assert_eq!(tracker.read(&[key(false)], false), None);
+    }
+
+    #[test]
+    fn native_copy_event_on_file_row_populates_internal_clipboard() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("copy-me.txt");
+        std::fs::write(&file, "untouched").unwrap();
+        let ctx = egui::Context::default();
+        let mut app = Veldir::from_saved(
+            ctx.clone(),
+            Saved {
+                tabs: vec![d.path().to_path_buf()],
+                live_refresh: false,
+                ..Default::default()
+            },
+        );
+        app.current_mut().loading = false;
+        app.current_mut().entries = crate::fs_ops::list(d.path()).unwrap();
+        app.current_mut().selected.insert(file.clone());
+        let result = ctx.run_ui(
+            egui::RawInput {
+                events: vec![egui::Event::Copy],
+                ..Default::default()
+            },
+            |ui| app.keyboard(ui.ctx()),
+        );
+        result.drop_without_applying_deltas();
+        assert_eq!(app.clipboard.as_ref().unwrap().sources, vec![file.clone()]);
+        assert!(!app.clipboard.as_ref().unwrap().cut);
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "untouched");
+    }
+
+    #[test]
     fn focused_row_keeps_keyboard_navigation_while_other_widgets_block_it() {
         let d = tempfile::tempdir().unwrap();
         for name in ["a.txt", "b.txt", "c.txt"] {

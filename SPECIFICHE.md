@@ -1,4 +1,4 @@
-# Veldir — specifiche tecniche v0.8.0
+# Veldir — specifiche tecniche v0.9.0
 
 ## Ambito
 Windows 10/11 x64. UI Rust + eframe/egui `=0.37.0` (renderer OpenGL/glow). Prototipo standalone senza Electron, account, telemetria o sincronizzazione in rete integrata. Licenza MIT.
@@ -52,6 +52,13 @@ Le operazioni batch non sono transazionali: se la destinazione cambia durante l'
 - Non esiste ancora il rendering bitmap delle pagine PDF, OCR o ricerca completa dentro i PDF.
 - `src/app.rs`: schede in Frame, intestazione, toolbar con gruppi/menu, pannello attivo evidenziato e dimensione selezionata in barra di stato.
 - Le modifiche alla UI non devono introdurre trasferimenti implicitamente distruttivi.
+
+## Aggiornamento 0.9.0
+- `filters.rs` implementa filtri combinati non distruttivi e categorizzazione per estensione; le directory restano navigabili.
+- `folder_watch.rs` usa `notify::recommended_watcher` su ciascuna cartella aperta, modalità non ricorsiva. Un thread dedicato cambia le registrazioni in base alle schede.
+- Eventi ricevuti su canale; debounce UI a 450 ms e refresh asincrono conservando la selezione degli elementi ancora presenti.
+- Preferenza persistente per il monitoraggio. Disattivazione dalla voce Visualizza.
+- Il fallback manuale F5 resta necessario per filesystem e unità di rete senza notifiche native.
 
 ## Roadmap
 1. **0.2.1:** correzione focus e selezione, verifica CI Windows. Collaudo GUI ancora da eseguire.

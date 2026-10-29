@@ -1,10 +1,12 @@
 use crate::fs_ops::{self, Entry, Job};
+use crate::{preview,search};
 use chrono::{DateTime, Local};
 use eframe::egui::{self, Color32, RichText};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc,atomic::{AtomicBool,Ordering}};
 
 const ACCENT: Color32 = Color32::from_rgb(112, 175, 250);
 const TEXT_MUTED: Color32 = Color32::from_rgb(144, 155, 171);
@@ -19,6 +21,8 @@ struct Saved {
     dual_pane: bool,
     sidebar_visible: bool,
     split_ratio: f32,
+    dark_theme: bool,
+    preview_visible: bool,
 }
 
 impl Default for Saved {
@@ -27,6 +31,7 @@ impl Default for Saved {
             favorites: Vec::new(), tabs: Vec::new(), active: 0,
             secondary_path: None, dual_pane: false,
             sidebar_visible: true, split_ratio: 0.5,
+            dark_theme: true, preview_visible: false,
         }
     }
 }
@@ -82,6 +87,9 @@ impl Tab {
 enum Message {
     FolderLoaded { tab_id: u64, generation: u64, result: Result<Vec<Entry>, String> },
     JobFinished { result: Result<String, String>, is_move: bool },
+    JobProgress { done: usize, total: usize },
+    SearchFinished { generation: u64, result: Result<Vec<search::Hit>, String> },
+    PreviewFinished { generation: u64, result: Result<preview::Details, String> },
 }
 
 enum Dialog {
@@ -91,6 +99,8 @@ enum Dialog {
     Delete(Vec<PathBuf>),
     ExternalDrop { sources: Vec<PathBuf>, destination: PathBuf },
     ConfirmMove { sources: Vec<PathBuf>, destination_folder: PathBuf },
+    BatchRename { sources: Vec<PathBuf>, prefix: String, find: String,
+                  replace: String, start: String },
 }
 
 #[derive(Clone)]
@@ -119,6 +129,20 @@ pub struct Veldir {
     address_input: String,
     sidebar_visible: bool,
     split_ratio: f32,
+    dark_theme: bool,
+    preview_visible: bool,
+    preview_request: Option<PathBuf>,
+    preview_generation: u64,
+    preview_data: Option<preview::Details>,
+    searching: bool,
+    search_visible: bool,
+    search_query: String,
+    search_root: PathBuf,
+    search_results: Vec<search::Hit>,
+    search_generation: u64,
+    search_cancel: Arc<AtomicBool>,
+    job_cancel: Arc<AtomicBool>,
+    job_progress: Option<(usize, usize)>,
 }
 
 impl Veldir {
@@ -168,7 +192,15 @@ impl Veldir {
             status: "Pronto".into(), editing_address: false, address_input: String::new(),
             sidebar_visible: saved.sidebar_visible,
             split_ratio: bounded_split_ratio(saved.split_ratio),
+            dark_theme: saved.dark_theme,
+            preview_visible: saved.preview_visible,
+            preview_request: None, preview_generation: 0, preview_data: None,
+            searching: false, search_visible: false, search_query: String::new(),
+            search_root: PathBuf::new(), search_results: Vec::new(),
+            search_generation: 0, search_cancel: Arc::new(AtomicBool::new(false)),
+            job_cancel: Arc::new(AtomicBool::new(false)), job_progress: None,
         };
+        if !app.dark_theme { cc.egui_ctx.set_visuals(egui::Visuals::light()); }
         let restored: Vec<PathBuf> = saved.tabs.into_iter().filter(|p| p.is_dir()).take(12).collect();
         if restored.is_empty() {
             app.add_tab(home);
@@ -368,6 +400,7 @@ impl Veldir {
                 }
                 Message::JobFinished { result, is_move } => {
                     self.busy = false;
+                    self.job_progress = None;
                     match result {
                         Ok(message) => {
                             if is_move { self.clipboard = None; }
@@ -381,6 +414,27 @@ impl Veldir {
                         }
                     }
                 }
+                Message::JobProgress { done, total } => {
+                    self.job_progress = Some((done,total));
+                    self.status = format!("Completati {done}/{total} elementi");
+                }
+                Message::SearchFinished { generation, result } => {
+                    if generation == self.search_generation {
+                        self.searching = false;
+                        match result {
+                            Ok(hits) => {
+                                self.status = format!("{} risultati trovati",hits.len());
+                                self.search_results = hits;
+                            }
+                            Err(e) => self.status = format!("Ricerca: {e}"),
+                        }
+                    }
+                }
+                Message::PreviewFinished {generation,result} => {
+                    if generation == self.preview_generation {
+                        self.preview_data = result.ok();
+                    }
+                }
             }
         }
     }
@@ -388,12 +442,18 @@ impl Veldir {
     fn begin_job(&mut self, job: Job) {
         if self.busy { return; }
         self.busy = true;
+        self.job_progress = None;
+        self.job_cancel = Arc::new(AtomicBool::new(false));
         self.status = "Operazione in corso...".into();
         let sender = self.tx.clone();
         let ctx = self.context.clone();
+        let cancelled = self.job_cancel.clone();
         let is_move = matches!(&job, Job::Move { .. } | Job::MoveMany { .. });
         std::thread::spawn(move || {
-            let result = fs_ops::execute(job);
+            let result = fs_ops::execute_progress(job,&cancelled,|done,total| {
+                let _ = sender.send(Message::JobProgress { done,total });
+                ctx.request_repaint();
+            });
             let _ = sender.send(Message::JobFinished { result, is_move });
             ctx.request_repaint();
         });

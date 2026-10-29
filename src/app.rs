@@ -664,9 +664,17 @@ impl Veldir {
             self.address_input = self.current().path.display().to_string();
             ctx.memory_mut(|m| m.request_focus(egui::Id::unique("address_bar")));
         }
-        if shortcut(egui::Key::F) {
+        if ctx.input(|i|i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::F)) {
+            self.search_visible = true;
+            self.search_root = self.current().path.clone();
+            self.search_results.clear();
+        } else if shortcut(egui::Key::F) {
             let filter_id = if self.focused_right { "folder_filter_right" } else { "folder_filter" };
             ctx.memory_mut(|m| m.request_focus(egui::Id::unique(filter_id)));
+        }
+        if ctx.input(|i|i.key_pressed(egui::Key::F3)) {
+            self.preview_visible = !self.preview_visible;
+            self.preview_request = None;
         }
         if ctx.input(|i| i.key_pressed(egui::Key::F5)) { self.refresh(); }
         if ctx.input(|i| i.key_pressed(egui::Key::F6)) {
@@ -772,6 +780,22 @@ impl Veldir {
         });
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
+            if ui.button("⌕ Cerca").on_hover_text("Ricerca nelle sottocartelle · Ctrl+Maiusc+F").clicked() {
+                self.search_visible = true;
+                self.search_root = self.current().path.clone();
+                self.search_results.clear();
+            }
+            if ui.button(if self.preview_visible { "▤ Chiudi anteprima" } else { "▤ Anteprima" })
+                .on_hover_text("Anteprima testuale e dettagli · F3").clicked() {
+                self.preview_visible = !self.preview_visible;
+                self.preview_request = None;
+            }
+            if ui.button(if self.dark_theme { "☼ Tema chiaro" } else { "☾ Tema scuro" })
+                .on_hover_text("Cambia il tema di Veldir").clicked() {
+                self.dark_theme = !self.dark_theme;
+                if self.dark_theme { self.context.set_visuals(egui::Visuals::dark()); }
+                else { self.context.set_visuals(egui::Visuals::light()); }
+            }
             if ui.button(if self.sidebar_visible { "◧ Nascondi barra" } else { "☰ Mostra barra" })
                 .on_hover_text("Mostra/nascondi la barra laterale").clicked() {
                 self.sidebar_visible = !self.sidebar_visible;
@@ -785,6 +809,13 @@ impl Veldir {
             let single = self.selected_one().is_some();
             if ui.add_enabled(!self.busy && single, egui::Button::new("Rinomina"))
                 .on_hover_text("F2").clicked() { self.prepare_rename(); }
+            if ui.add_enabled(!self.busy && self.selected().len()>1, egui::Button::new("Rinomina più file"))
+                .on_hover_text("Numerazione e sostituzione di testo").clicked() {
+                self.dialog = Dialog::BatchRename {
+                    sources:self.selected(), prefix:String::new(), find:String::new(),
+                    replace:String::new(), start:"1".into()
+                };
+            }
             if ui.add_enabled(!self.busy && selected, egui::Button::new("Copia"))
                 .on_hover_text("Ctrl+C").clicked() { self.clipboard_set(false); }
             if ui.add_enabled(!self.busy && selected, egui::Button::new("Taglia"))
@@ -1078,12 +1109,13 @@ impl Veldir {
 impl eframe::App for Veldir {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.pump();
+        self.update_preview();
         self.accept_os_drop(ui.ctx());
         self.keyboard(ui.ctx());
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("◈ VELDIR").strong().size(18.0).color(ACCENT));
-            ui.label(RichText::new("0.3.0   •   FILE MANAGER FOR WINDOWS").small().color(TEXT_MUTED));
+            ui.label(RichText::new("0.4.0   •   FILE MANAGER FOR WINDOWS").small().color(TEXT_MUTED));
         });
         ui.add_space(8.0);
         self.tabs_ui(ui);
@@ -1153,10 +1185,22 @@ impl eframe::App for Veldir {
             ui.label(RichText::new(format!("{count} elementi  ·  {} selezionati", tab.selected.len())).small().color(TEXT_MUTED));
             ui.label(RichText::new(tab.path.display().to_string()).small().color(TEXT_MUTED));
             ui.separator();
-            if self.busy { ui.spinner(); }
+            if self.busy {
+                ui.spinner();
+                if let Some((done,total))=self.job_progress {
+                    ui.add(egui::ProgressBar::new(done as f32/total.max(1) as f32)
+                        .desired_width(135.0).text(format!("{done}/{total}")));
+                }
+                if ui.button("Annulla").on_hover_text("Interrompe tra un elemento e il successivo").clicked() {
+                    self.job_cancel.store(true,Ordering::Relaxed);
+                    self.status="Annullamento richiesto…".into();
+                }
+            }
             ui.label(RichText::new(&self.status).small().color(TEXT_MUTED));
         });
         self.dialog_ui(ui.ctx());
+        self.search_ui(ui.ctx());
+        self.preview_ui(ui.ctx());
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -1168,6 +1212,8 @@ impl eframe::App for Veldir {
             dual_pane: self.secondary.is_some(),
             sidebar_visible: self.sidebar_visible,
             split_ratio: self.split_ratio,
+            dark_theme: self.dark_theme,
+            preview_visible: self.preview_visible,
         };
         eframe::set_value(storage, "veldir_state", &saved);
     }

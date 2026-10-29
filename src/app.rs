@@ -1197,7 +1197,7 @@ impl Veldir {
         let mut target = None;
         for (name, path) in &self.shortcuts {
             if ui.add_sized([190.0, 27.0], egui::Button::new(format!("  {name}"))
-                .halign(egui::Align::Min).frame(false).selected(&self.current().path == path)).clicked() { target = Some(path.clone()); }
+                .shortcut_text("").frame(false).selected(&self.current().path == path)).clicked() { target = Some(path.clone()); }
         }
         ui.add_space(15.0);
         ui.label(RichText::new("PREFERITI").color(TEXT_MUTED).small().strong());
@@ -1206,7 +1206,7 @@ impl Veldir {
             let title = path.file_name().and_then(|s| s.to_str())
                 .map(str::to_owned).unwrap_or_else(|| path.display().to_string());
             if ui.add_sized([190.0, 27.0], egui::Button::new(format!("  ★  {title}"))
-                .halign(egui::Align::Min).frame(false).selected(&self.current().path == path))
+                .shortcut_text("").frame(false).selected(&self.current().path == path))
                 .on_hover_text(path.display().to_string()).clicked() { target = Some(path.clone()); }
         }
         ui.add_space(15.0);
@@ -1214,7 +1214,7 @@ impl Veldir {
         ui.add_space(4.0);
         for drive in &self.drives {
             if ui.add_sized([190.0, 27.0], egui::Button::new(format!("  {}", drive.display()))
-                .halign(egui::Align::Min).frame(false).selected(&self.current().path == drive)).clicked() { target = Some(drive.clone()); }
+                .shortcut_text("").frame(false).selected(&self.current().path == drive)).clicked() { target = Some(drive.clone()); }
         }
         if let Some(path) = target { self.navigate(path); }
     }
@@ -1245,18 +1245,18 @@ impl Veldir {
         ui.horizontal(|ui| {
             if ui.add_sized([w_name, 24.0], egui::Button::new(
                 RichText::new(heading(SortBy::Name, "NOME")).small().color(TEXT_MUTED).strong())
-                .halign(egui::Align::Min).frame(false)).on_hover_text("Ordina per nome").clicked() {
+                .shortcut_text("").frame(false)).on_hover_text("Ordina per nome").clicked() {
                 requested_sort = Some(SortBy::Name);
             }
             if !dual { ui.add_sized([w_type, 24.0], egui::Label::new(RichText::new("TIPO").small().color(TEXT_MUTED).strong()).halign(egui::Align::Min)); }
             if ui.add_sized([w_size, 24.0], egui::Button::new(
                 RichText::new(heading(SortBy::Size, "DIMENSIONE")).small().color(TEXT_MUTED).strong())
-                .halign(egui::Align::Min).frame(false)).on_hover_text("Ordina per dimensione").clicked() {
+                .shortcut_text("").frame(false)).on_hover_text("Ordina per dimensione").clicked() {
                 requested_sort = Some(SortBy::Size);
             }
             if !dual && ui.add_sized([w_date, 24.0], egui::Button::new(
                 RichText::new(heading(SortBy::Modified, "MODIFICATO")).small().color(TEXT_MUTED).strong())
-                .halign(egui::Align::Min).frame(false)).on_hover_text("Ordina per data").clicked() {
+                .shortcut_text("").frame(false)).on_hover_text("Ordina per data").clicked() {
                 requested_sort = Some(SortBy::Modified);
             }
         });
@@ -1886,7 +1886,7 @@ fn pretty_bytes(n: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_selection, pretty_bytes, bounded_split_ratio, sort_entries, Saved, SortBy};
+    use super::{apply_theme, column_widths, egui, apply_selection, pretty_bytes, bounded_split_ratio, sort_entries, Saved, SortBy};
     use crate::fs_ops::Entry;
     use std::{collections::BTreeSet, path::PathBuf};
 

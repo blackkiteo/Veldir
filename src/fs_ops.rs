@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -52,6 +53,7 @@ pub enum Job {
     CopyMany { sources: Vec<PathBuf>, destination_folder: PathBuf },
     MoveMany { sources: Vec<PathBuf>, destination_folder: PathBuf },
     TrashMany { sources: Vec<PathBuf> },
+    RenameMany { changes: Vec<(PathBuf, String)> },
 }
 
 pub fn valid_name(name: &str) -> Result<(), String> {
@@ -197,6 +199,94 @@ fn preflight_batch(sources: &[PathBuf], destination_folder: &Path) -> Result<(),
     Ok(())
 }
 
+/// Preview a numbered bulk-rename plan; extension is preserved for files.
+pub fn rename_plan(sources: &[PathBuf], prefix: &str, find: &str, replace: &str, start: u32)
+    -> Result<Vec<(PathBuf, String)>, String> {
+    if sources.is_empty() { return Err("Seleziona almeno un elemento".into()); }
+    if sources.len() > 10_000 { return Err("Massimo 10.000 nomi per operazione".into()); }
+    let mut result = Vec::with_capacity(sources.len());
+    for (i, source) in sources.iter().enumerate() {
+        let filename = source.file_name().and_then(|s| s.to_str())
+            .ok_or("Nome file non Unicode: operazione non supportata")?;
+        let extension = if source.is_file() { source.extension().and_then(|s| s.to_str()) } else { None };
+        let stem = if extension.is_some() { source.file_stem().and_then(|s| s.to_str()).unwrap_or(filename) } else { filename };
+        let replaced = if find.is_empty() { stem.to_owned() } else { stem.replace(find, replace) };
+        let number = start.checked_add(i as u32).ok_or("Contatore troppo grande")?;
+        let mut new_name = format!("{prefix}{number:03}_{replaced}");
+        if let Some(ext) = extension { new_name.push('.'); new_name.push_str(ext); }
+        valid_name(&new_name)?;
+        result.push((source.clone(), new_name));
+    }
+    Ok(result)
+}
+
+fn preflight_rename_many(changes: &[(PathBuf, String)]) -> Result<(), String> {
+    if changes.is_empty() { return Err("Nessun elemento da rinominare".into()); }
+    let mut targets = BTreeSet::new();
+    for (source, name) in changes {
+        valid_name(name)?;
+        if source.symlink_metadata().is_err() { return Err(format!("Sorgente assente: {}", source.display())); }
+        let parent = source.parent().ok_or("Percorso senza cartella padre")?;
+        let target = parent.join(name);
+        if target == *source { return Err("Un nome rimane invariato: modifica i parametri".into()); }
+        if !targets.insert(target.to_string_lossy().to_lowercase()) {
+            return Err("Due file avrebbero lo stesso nome: operazione interrotta".into());
+        }
+        if target.symlink_metadata().is_ok() { return Err(format!("Destinazione già presente: {}", target.display())); }
+    }
+    Ok(())
+}
+
+/// Progress is per item. Cancellation is safe between items; an in-progress file finishes first.
+pub fn execute_progress<F: Fn(usize, usize)>(
+    job: Job, cancelled: &AtomicBool, notify: F
+) -> Result<String, String> {
+    match job {
+        Job::CopyMany { sources, destination_folder } => {
+            preflight_batch(&sources, &destination_folder)?;
+            execute_batch_progress(sources, cancelled, notify,
+                |source| Job::Copy { source, destination_folder: destination_folder.clone() })
+        }
+        Job::MoveMany { sources, destination_folder } => {
+            preflight_batch(&sources, &destination_folder)?;
+            execute_batch_progress(sources, cancelled, notify,
+                |source| Job::Move { source, destination_folder: destination_folder.clone() })
+        }
+        Job::TrashMany { sources } => execute_batch_progress(sources, cancelled, notify,
+            |source| Job::Trash { source }),
+        Job::RenameMany { changes } => {
+            preflight_rename_many(&changes)?;
+            let total = changes.len();
+            for (idx, (source,name)) in changes.into_iter().enumerate() {
+                if cancelled.load(Ordering::Relaxed) {
+                    return Err(format!("Annullato dopo {idx}/{total} elementi; modifiche precedenti conservate"));
+                }
+                execute(Job::Rename {source,name})?;
+                notify(idx+1,total);
+            }
+            Ok(format!("Rinominati {total} elementi"))
+        }
+        single => execute(single),
+    }
+}
+
+fn execute_batch_progress<F: Fn(usize,usize)>(
+    sources: Vec<PathBuf>, cancelled: &AtomicBool, notify: F,
+    action: impl Fn(PathBuf) -> Job
+) -> Result<String,String> {
+    if sources.is_empty() { return Err("Nessun elemento selezionato".into()); }
+    let total=sources.len();
+    for (idx,source) in sources.into_iter().enumerate() {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(format!("Annullato dopo {idx}/{total} elementi; modifiche precedenti conservate"));
+        }
+        execute(action(source)).map_err(|e|
+            format!("Interrotto dopo {idx}/{total} elementi, alcuni già modificati: {e}"))?;
+        notify(idx+1,total);
+    }
+    Ok(format!("Completati {total} elementi"))
+}
+
 fn run_batch(sources: Vec<PathBuf>, action: impl Fn(PathBuf) -> Job) -> Result<String, String> {
     if sources.is_empty() { return Err("Nessun elemento selezionato".into()); }
     let total = sources.len();
@@ -260,6 +350,15 @@ pub fn execute(job: Job) -> Result<String, String> {
         Job::TrashMany { sources } => {
             run_batch(sources, |source| Job::Trash { source })
         }
+        Job::RenameMany { changes } => {
+            preflight_rename_many(&changes)?;
+            let total = changes.len();
+            for (idx,(source,name)) in changes.into_iter().enumerate() {
+                execute(Job::Rename {source,name}).map_err(|e|
+                    format!("Rinomina interrotta dopo {idx}/{total}: {e}"))?;
+            }
+            Ok(format!("Rinominati {total} elementi"))
+        }
     }
 }
 
@@ -267,6 +366,34 @@ pub fn execute(job: Job) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn bulk_rename_preflight_never_overwrites() {
+        let dir=tempfile::tempdir().unwrap();
+        let a=dir.path().join("a.txt");let b=dir.path().join("b.txt");
+        fs::write(&a,"AAA").unwrap();fs::write(&b,"BBB").unwrap();
+        let plan=rename_plan(&[a.clone(),b.clone()],"pic_","","",1).unwrap();
+        assert_eq!(plan[0].1,"pic_001_a.txt");
+        assert_eq!(plan[1].1,"pic_002_b.txt");
+        fs::write(dir.path().join("pic_002_b.txt"),"ORIGINAL").unwrap();
+        assert!(execute(Job::RenameMany{changes:plan}).is_err());
+        assert_eq!(fs::read_to_string(a).unwrap(),"AAA");
+        assert_eq!(fs::read_to_string(b).unwrap(),"BBB");
+    }
+    #[test]
+    fn cancellation_keeps_prior_items_and_leaves_next_untouched() {
+        let dir=tempfile::tempdir().unwrap();
+        let from=dir.path().join("from");let to=dir.path().join("to");
+        fs::create_dir(&from).unwrap(); fs::create_dir(&to).unwrap();
+        let a=from.join("a.txt");let b=from.join("b.txt");
+        fs::write(&a,"a").unwrap();fs::write(&b,"b").unwrap();
+        let cancelled=AtomicBool::new(false);
+        let result=execute_progress(Job::CopyMany {
+            sources:vec![a,b],destination_folder:to.clone()
+        },&cancelled,|done,_|{ if done==1 {cancelled.store(true,Ordering::Relaxed);} });
+        assert!(result.is_err());
+        assert!(to.join("a.txt").exists());
+        assert!(!to.join("b.txt").exists());
+    }
     #[test]
     fn windows_bad_names_rejected() {
         for name in ["", "..", "foo/bar", "CON.txt", "LPT1", "test.", "a\\b", "hi "] {

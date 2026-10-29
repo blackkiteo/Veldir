@@ -100,6 +100,7 @@ enum Message {
     PreviewImageLoaded { generation:u64, result:Result<image_view::Bitmap,String> },
     ThumbnailLoaded {path:PathBuf,result:Result<image_view::Bitmap,String>},
     IconLoaded {key:String,result:Result<image_view::Bitmap,String>},
+    WatchedPath(PathBuf),
 }
 
 enum Dialog {
@@ -169,6 +170,10 @@ pub struct Veldir {
     job_cancel: Arc<AtomicBool>,
     job_progress: Option<fs_ops::Progress>,
     job_started_at: Option<Instant>,
+    watcher: folder_watch::FolderWatcher,
+    watched_paths: Vec<PathBuf>,
+    watch_dirty: HashMap<PathBuf,Instant>,
+    live_refresh: bool,
 }
 
 impl Veldir {
@@ -193,6 +198,12 @@ impl Veldir {
         let saved: Saved = cc.storage.and_then(|s| eframe::get_value(s, "veldir_state"))
             .unwrap_or_default();
         let (tx, rx) = mpsc::channel();
+        let watch_tx=tx.clone();
+        let watch_ctx=cc.egui_ctx.clone();
+        let watcher=folder_watch::FolderWatcher::start(move |path| {
+            let _=watch_tx.send(Message::WatchedPath(path));
+            watch_ctx.request_repaint();
+        });
         let home = dirs_next::home_dir()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("C:\\"));
@@ -232,6 +243,8 @@ impl Veldir {
             search_generation: 0, search_cancel: Arc::new(AtomicBool::new(false)),
             job_cancel: Arc::new(AtomicBool::new(false)), job_progress: None,
             job_started_at: None,
+            watcher,watched_paths:Vec::new(),watch_dirty:HashMap::new(),
+            live_refresh:saved.live_refresh,
         };
         if !app.dark_theme { cc.egui_ctx.set_visuals(egui::Visuals::light()); }
         let restored: Vec<PathBuf> = saved.tabs.into_iter().filter(|p| p.is_dir()).take(12).collect();
@@ -406,6 +419,66 @@ impl Veldir {
         }
     }
 
+    fn sync_watch_paths(&mut self) {
+        let mut paths:Vec<PathBuf>=if self.live_refresh {
+            self.tabs.iter().map(|t|t.path.clone())
+                .chain(self.secondary.iter().map(|t|t.path.clone()))
+                .filter(|p|p.is_dir()).collect()
+        }else{Vec::new()};
+        paths.sort();paths.dedup();
+        if paths!=self.watched_paths {
+            self.watcher.set_paths(paths.clone());
+            self.watched_paths=paths;
+        }
+    }
+
+    fn quiet_reload_path(&mut self,path:&Path) {
+        let mut requests=Vec::new();
+        for tab in self.tabs.iter_mut().chain(self.secondary.iter_mut()) {
+            if tab.path==path && !tab.loading {
+                tab.generation+=1;
+                // Preserve the current list, scrollbar, and selection during reload.
+                requests.push((tab.path.clone(),tab.id,tab.generation));
+            }
+        }
+        for (path,id,generation) in requests {
+            let sender=self.tx.clone();
+            let ctx=self.context.clone();
+            std::thread::spawn(move || {
+                let result=fs_ops::list(&path);
+                let _=sender.send(Message::FolderLoaded{tab_id:id,generation,result});
+                ctx.request_repaint();
+            });
+        }
+    }
+
+    fn apply_watch_changes(&mut self,ctx:&egui::Context) {
+        if !self.live_refresh {
+            self.watch_dirty.clear();
+            return;
+        }
+        if self.watch_dirty.is_empty(){return;}
+        if self.busy {
+            ctx.request_repaint_after(Duration::from_millis(500));
+            return;
+        }
+        let now=Instant::now();
+        let mut affected=HashSet::new();
+        self.watch_dirty.retain(|changed,last| {
+            if now.duration_since(*last)<Duration::from_millis(450) {return true;}
+            for directory in &self.watched_paths {
+                if directory==changed || changed.parent()==Some(directory.as_path()) {
+                    affected.insert(directory.clone());
+                }
+            }
+            false
+        });
+        for path in affected {self.quiet_reload_path(&path);}
+        if !self.watch_dirty.is_empty(){
+            ctx.request_repaint_after(Duration::from_millis(500));
+        }
+    }
+
     fn refresh(&mut self) {
         for i in 0..self.tabs.len() { self.load(i); }
         if self.secondary.is_some() { self.load_secondary(); }
@@ -415,6 +488,15 @@ impl Veldir {
     fn pump(&mut self) {
         while let Ok(message) = self.rx.try_recv() {
             match message {
+                Message::WatchedPath(path)=> {
+                    if self.live_refresh {
+                        if self.thumb_cache.remove(&path).is_some(){
+                            self.thumb_order.retain(|p|p!=&path);
+                        }
+                        self.thumb_failed.remove(&path);
+                        self.watch_dirty.insert(path,Instant::now());
+                    }
+                }
                 Message::FolderLoaded { tab_id, generation, result } => {
                     let tab = self.tabs.iter_mut().find(|t| t.id == tab_id && t.generation == generation)
                         .or_else(|| self.secondary.as_mut()
@@ -424,6 +506,12 @@ impl Veldir {
                         match result {
                             Ok(mut entries) => {
                                 sort_entries(&mut entries, tab.sort_by, tab.descending);
+                                let known:HashSet<PathBuf>=entries.iter()
+                                    .map(|e|e.path.clone()).collect();
+                                tab.selected.retain(|p|known.contains(p));
+                                if tab.anchor.as_ref().is_some_and(|a|!known.contains(a)) {
+                                    tab.anchor=None;
+                                }
                                 tab.entries = entries;
                                 tab.error = None;
                             }
@@ -1050,6 +1138,9 @@ impl Veldir {
                     if ui.checkbox(&mut self.sidebar_visible,"Barra laterale").changed(){
                         ui.close();
                     }
+                    if ui.checkbox(&mut self.live_refresh,"Aggiornamento automatico cartelle").changed(){
+                        ui.close();
+                    }
                     let was_dark=self.dark_theme;
                     if ui.checkbox(&mut self.dark_theme,"Tema scuro").changed(){ui.close();}
                     if was_dark!=self.dark_theme{
@@ -1543,6 +1634,8 @@ impl Veldir {
 impl eframe::App for Veldir {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.pump();
+        self.sync_watch_paths();
+        self.apply_watch_changes(ui.ctx());
         self.update_preview();
         self.accept_os_drop(ui.ctx());
         self.keyboard(ui.ctx());
@@ -1696,6 +1789,7 @@ impl eframe::App for Veldir {
             dark_theme: self.dark_theme,
             preview_visible: self.preview_visible,
             thumbs_visible: self.thumbs_visible,
+            live_refresh:self.live_refresh,
         };
         eframe::set_value(storage, "veldir_state", &saved);
     }

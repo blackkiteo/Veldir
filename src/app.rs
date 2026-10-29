@@ -432,6 +432,7 @@ pub struct Veldir {
     history_visible: bool,
     job_history: VecDeque<String>,
     job_sources: Vec<PathBuf>,
+    row_focus_ids: HashSet<egui::Id>,
     preview_zoom: f32,
     search_filter: String,
     search_descending: bool,
@@ -580,6 +581,7 @@ impl Veldir {
             history_visible: false,
             job_history: VecDeque::new(),
             job_sources: Vec::new(),
+            row_focus_ids: HashSet::new(),
             preview_zoom: 1.0,
             search_filter: String::new(),
             search_descending: false,
@@ -1799,6 +1801,9 @@ impl Veldir {
             self.refresh();
         }
         if ctx.input(|i| i.key_pressed(egui::Key::F6)) {
+            if let Some(id) = ctx.memory(|m| m.focused()) {
+                ctx.memory_mut(|m| m.surrender_focus(id));
+            }
             if self.secondary.is_some() {
                 self.focus(!self.focused_right);
             } else {
@@ -1815,7 +1820,17 @@ impl Veldir {
             self.up();
         }
 
-        if !ctx.egui_wants_keyboard_input() && !self.busy && matches!(self.dialog, Dialog::None) {
+        let row_focused = ctx
+            .memory(|m| m.focused())
+            .is_some_and(|id| self.row_focus_ids.contains(&id));
+        if (!ctx.egui_wants_keyboard_input() || row_focused)
+            && !egui::Popup::is_any_open(ctx)
+            && !self.search_visible
+            && !self.about_visible
+            && !self.history_visible
+            && !self.busy
+            && matches!(self.dialog, Dialog::None)
+        {
             self.navigate_rows(ctx);
             if ctx.input(|i| i.key_pressed(egui::Key::Backspace)) {
                 self.up();
@@ -2401,6 +2416,7 @@ impl Veldir {
         let requested_sort;
         let mut thumbnails_needed = Vec::new();
         let mut icons_needed = Vec::new();
+        let mut focus_ids = Vec::new();
         let mut columns = self.columns.clone();
         let tab = self.panel(right);
         let filter = tab.filter.to_lowercase();
@@ -2612,6 +2628,10 @@ impl Veldir {
                         egui::Stroke::new(1.0, accent_color(ui)),
                     );
                 }
+                focus_ids.push(response.id);
+                if tab.scroll_to == Some(row) || response.clicked() {
+                    response.request_focus();
+                }
                 response.widget_info(|| {
                     egui::WidgetInfo::selected(egui::Role::Row, true, selected, &item.name)
                 });
@@ -2654,6 +2674,7 @@ impl Veldir {
                 }
             }
         });
+        self.row_focus_ids.extend(focus_ids);
         self.columns = columns;
         self.panel_mut(right).scroll_to = None;
         self.schedule_assets(thumbnails_needed, icons_needed);
@@ -3281,6 +3302,7 @@ impl Veldir {
         self.update_preview();
         self.accept_os_drop(ui.ctx());
         self.keyboard(ui.ctx());
+        self.row_focus_ids.clear();
         ui.add_space(5.0);
         let dark = self.dark_theme;
         egui::Frame::new()
@@ -3548,6 +3570,48 @@ mod tests {
     }
 
     #[test]
+    fn focused_row_keeps_keyboard_navigation_while_other_widgets_block_it() {
+        let d = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(d.path().join(name), "x").unwrap();
+        }
+        let ctx = egui::Context::default();
+        let mut app = Veldir::from_saved(
+            ctx.clone(),
+            Saved {
+                tabs: vec![d.path().to_path_buf()],
+                live_refresh: false,
+                ..Default::default()
+            },
+        );
+        let tab = app.current_mut();
+        tab.entries = crate::fs_ops::list(d.path()).unwrap();
+        tab.loading = false;
+        tab.cursor = Some(tab.entries[0].path.clone());
+        let row_id = egui::Id::unique("test-row");
+        app.row_focus_ids.insert(row_id);
+        ctx.memory_mut(|m| m.request_focus(row_id));
+        let input = || egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::ArrowDown,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+        let output = ctx.run_ui(input(), |ui| app.keyboard(ui.ctx()));
+        output.drop_without_applying_deltas();
+        assert_eq!(app.current().cursor, Some(d.path().join("b.txt")));
+        app.row_focus_ids.clear();
+        ctx.memory_mut(|m| m.request_focus(egui::Id::unique("other-widget")));
+        let output = ctx.run_ui(input(), |ui| app.keyboard(ui.ctx()));
+        output.drop_without_applying_deltas();
+        assert_eq!(app.current().cursor, Some(d.path().join("b.txt")));
+    }
+
+    #[test]
     fn secondary_text_and_accent_meet_contrast_in_both_themes() {
         fn luminance(c: egui::Color32) -> f32 {
             let channel = |v: u8| {
@@ -3773,6 +3837,7 @@ mod tests {
                 ..Default::default()
             },
         );
+        ctx.memory_mut(|m| m.request_focus(egui::Id::unique("focused-filter")));
         let output = ctx.run_ui(
             egui::RawInput {
                 events: vec![egui::Event::Key {

@@ -1,6 +1,8 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 mod app;
 mod fs_ops;
+mod search;
+mod preview;
 
 use eframe::egui;
 

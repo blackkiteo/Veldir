@@ -1,10 +1,12 @@
 use crate::fs_ops::{self, Entry, Job};
+use crate::{preview,search};
 use chrono::{DateTime, Local};
 use eframe::egui::{self, Color32, RichText};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc,atomic::{AtomicBool,Ordering}};
 
 const ACCENT: Color32 = Color32::from_rgb(112, 175, 250);
 const TEXT_MUTED: Color32 = Color32::from_rgb(144, 155, 171);
@@ -19,6 +21,8 @@ struct Saved {
     dual_pane: bool,
     sidebar_visible: bool,
     split_ratio: f32,
+    dark_theme: bool,
+    preview_visible: bool,
 }
 
 impl Default for Saved {
@@ -27,6 +31,7 @@ impl Default for Saved {
             favorites: Vec::new(), tabs: Vec::new(), active: 0,
             secondary_path: None, dual_pane: false,
             sidebar_visible: true, split_ratio: 0.5,
+            dark_theme: true, preview_visible: false,
         }
     }
 }
@@ -82,6 +87,9 @@ impl Tab {
 enum Message {
     FolderLoaded { tab_id: u64, generation: u64, result: Result<Vec<Entry>, String> },
     JobFinished { result: Result<String, String>, is_move: bool },
+    JobProgress { done: usize, total: usize },
+    SearchFinished { generation: u64, result: Result<Vec<search::Hit>, String> },
+    PreviewFinished { generation: u64, result: Result<preview::Details, String> },
 }
 
 enum Dialog {
@@ -91,6 +99,8 @@ enum Dialog {
     Delete(Vec<PathBuf>),
     ExternalDrop { sources: Vec<PathBuf>, destination: PathBuf },
     ConfirmMove { sources: Vec<PathBuf>, destination_folder: PathBuf },
+    BatchRename { sources: Vec<PathBuf>, prefix: String, find: String,
+                  replace: String, start: String },
 }
 
 #[derive(Clone)]
@@ -119,6 +129,20 @@ pub struct Veldir {
     address_input: String,
     sidebar_visible: bool,
     split_ratio: f32,
+    dark_theme: bool,
+    preview_visible: bool,
+    preview_request: Option<PathBuf>,
+    preview_generation: u64,
+    preview_data: Option<preview::Details>,
+    searching: bool,
+    search_visible: bool,
+    search_query: String,
+    search_root: PathBuf,
+    search_results: Vec<search::Hit>,
+    search_generation: u64,
+    search_cancel: Arc<AtomicBool>,
+    job_cancel: Arc<AtomicBool>,
+    job_progress: Option<(usize, usize)>,
 }
 
 impl Veldir {
@@ -168,7 +192,15 @@ impl Veldir {
             status: "Pronto".into(), editing_address: false, address_input: String::new(),
             sidebar_visible: saved.sidebar_visible,
             split_ratio: bounded_split_ratio(saved.split_ratio),
+            dark_theme: saved.dark_theme,
+            preview_visible: saved.preview_visible,
+            preview_request: None, preview_generation: 0, preview_data: None,
+            searching: false, search_visible: false, search_query: String::new(),
+            search_root: PathBuf::new(), search_results: Vec::new(),
+            search_generation: 0, search_cancel: Arc::new(AtomicBool::new(false)),
+            job_cancel: Arc::new(AtomicBool::new(false)), job_progress: None,
         };
+        if !app.dark_theme { cc.egui_ctx.set_visuals(egui::Visuals::light()); }
         let restored: Vec<PathBuf> = saved.tabs.into_iter().filter(|p| p.is_dir()).take(12).collect();
         if restored.is_empty() {
             app.add_tab(home);
@@ -368,6 +400,7 @@ impl Veldir {
                 }
                 Message::JobFinished { result, is_move } => {
                     self.busy = false;
+                    self.job_progress = None;
                     match result {
                         Ok(message) => {
                             if is_move { self.clipboard = None; }
@@ -381,6 +414,27 @@ impl Veldir {
                         }
                     }
                 }
+                Message::JobProgress { done, total } => {
+                    self.job_progress = Some((done,total));
+                    self.status = format!("Completati {done}/{total} elementi");
+                }
+                Message::SearchFinished { generation, result } => {
+                    if generation == self.search_generation {
+                        self.searching = false;
+                        match result {
+                            Ok(hits) => {
+                                self.status = format!("{} risultati trovati",hits.len());
+                                self.search_results = hits;
+                            }
+                            Err(e) => self.status = format!("Ricerca: {e}"),
+                        }
+                    }
+                }
+                Message::PreviewFinished {generation,result} => {
+                    if generation == self.preview_generation {
+                        self.preview_data = result.ok();
+                    }
+                }
             }
         }
     }
@@ -388,15 +442,128 @@ impl Veldir {
     fn begin_job(&mut self, job: Job) {
         if self.busy { return; }
         self.busy = true;
+        self.job_progress = None;
+        self.job_cancel = Arc::new(AtomicBool::new(false));
         self.status = "Operazione in corso...".into();
         let sender = self.tx.clone();
         let ctx = self.context.clone();
+        let cancelled = self.job_cancel.clone();
         let is_move = matches!(&job, Job::Move { .. } | Job::MoveMany { .. });
         std::thread::spawn(move || {
-            let result = fs_ops::execute(job);
+            let result = fs_ops::execute_progress(job,&cancelled,|done,total| {
+                let _ = sender.send(Message::JobProgress { done,total });
+                ctx.request_repaint();
+            });
             let _ = sender.send(Message::JobFinished { result, is_move });
             ctx.request_repaint();
         });
+    }
+
+    fn start_search(&mut self) {
+        let query = self.search_query.trim().to_owned();
+        if query.is_empty() { self.status = "Inserisci almeno un carattere per cercare".into(); return; }
+        self.search_cancel.store(true,Ordering::Relaxed);
+        self.search_cancel = Arc::new(AtomicBool::new(false));
+        self.search_generation += 1;
+        let generation = self.search_generation;
+        let root = self.search_root.clone();
+        let sender = self.tx.clone();
+        let ctx = self.context.clone();
+        let cancelled = self.search_cancel.clone();
+        self.searching = true;
+        self.search_results.clear();
+        self.status = "Ricerca in corso...".into();
+        std::thread::spawn(move || {
+            let result = search::find(&root,&query,250,&cancelled);
+            let _ = sender.send(Message::SearchFinished{generation,result});
+            ctx.request_repaint();
+        });
+    }
+
+    fn update_preview(&mut self) {
+        if !self.preview_visible { return; }
+        let wanted = self.selected_one();
+        if wanted == self.preview_request { return; }
+        self.preview_generation += 1;
+        self.preview_request = wanted.clone();
+        self.preview_data = None;
+        if let Some(path) = wanted {
+            let generation = self.preview_generation;
+            let sender = self.tx.clone();
+            let ctx = self.context.clone();
+            std::thread::spawn(move || {
+                let result = preview::details(&path);
+                let _ = sender.send(Message::PreviewFinished{generation,result});
+                ctx.request_repaint();
+            });
+        }
+    }
+
+    fn search_ui(&mut self, ctx: &egui::Context) {
+        if !self.search_visible { return; }
+        let mut open = self.search_visible;
+        let mut execute_search = false;
+        let mut choose = None;
+        let mut cancel_search = false;
+        egui::Window::new("Ricerca ricorsiva").open(&mut open)
+            .default_size([690.0,450.0]).resizable(true).show(ctx,|ui| {
+            ui.label(RichText::new(format!("Cartella: {}",self.search_root.display())).small().color(TEXT_MUTED));
+            ui.horizontal(|ui| {
+                let response = ui.add(egui::TextEdit::singleline(&mut self.search_query)
+                    .desired_width(380.0).hint_text("Nome file o ricerca fuzzy"));
+                if response.lost_focus() && ui.input(|i|i.key_pressed(egui::Key::Enter)) { execute_search=true; }
+                if ui.add_enabled(!self.searching,egui::Button::new("Cerca")).clicked() { execute_search=true; }
+                if self.searching && ui.button("Interrompi").clicked() { cancel_search=true; }
+            });
+            ui.label(RichText::new("Ricerca in sottocartelle, massimo 250 risultati. Collegamenti esclusi.")
+                .small().color(TEXT_MUTED));
+            ui.separator();
+            if self.searching { ui.spinner(); }
+            egui::ScrollArea::vertical().max_height(330.0).show(ui,|ui| {
+                for hit in &self.search_results {
+                    let icon = if hit.is_dir {"▣"} else {"▤"};
+                    if ui.add(egui::Button::new(format!("{icon} {}",hit.path.display())).frame(false))
+                        .on_hover_text("Apri posizione").clicked() { choose=Some(hit.path.clone()); }
+                }
+            });
+        });
+        self.search_visible = open;
+        if cancel_search {
+            self.search_cancel.store(true,Ordering::Relaxed);
+            self.search_generation += 1;
+            self.searching = false;
+            self.status="Ricerca interrotta".into();
+        }
+        if execute_search { self.start_search(); }
+        if let Some(path)=choose {
+            self.search_visible=false;
+            if path.is_dir() { self.navigate(path); }
+            else if let Some(parent)=path.parent() { self.navigate(parent.to_path_buf()); }
+        }
+    }
+
+    fn preview_ui(&mut self, ctx: &egui::Context) {
+        if !self.preview_visible { return; }
+        let mut open = self.preview_visible;
+        egui::Window::new("Dettagli e anteprima").open(&mut open)
+            .default_size([430.0,480.0]).resizable(true).show(ctx,|ui| {
+            if let Some(data)=&self.preview_data {
+                ui.heading(data.path.file_name().unwrap_or_default().to_string_lossy());
+                ui.label(format!("Tipo: {}  •  Dimensione: {}",data.kind,pretty_bytes(data.bytes)));
+                ui.label(RichText::new(data.path.display().to_string()).small().color(TEXT_MUTED));
+                ui.separator();
+                if let Some(note)=&data.note { ui.label(RichText::new(note).small().color(TEXT_MUTED)); }
+                if let Some(content)=&data.text {
+                    egui::ScrollArea::both().max_height(350.0).show(ui,|ui| {
+                        ui.add(egui::Label::new(RichText::new(content).monospace()).wrap());
+                    });
+                }
+            } else {
+                ui.label("Seleziona un file per visualizzarne i dettagli");
+            }
+        });
+        self.preview_visible=open;
+        if !open { self.preview_request=None; self.preview_data=None; }
     }
 
     fn selected(&self) -> Vec<PathBuf> { self.current().selected.iter().cloned().collect() }
@@ -497,9 +664,17 @@ impl Veldir {
             self.address_input = self.current().path.display().to_string();
             ctx.memory_mut(|m| m.request_focus(egui::Id::unique("address_bar")));
         }
-        if shortcut(egui::Key::F) {
+        if ctx.input(|i|i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::F)) {
+            self.search_visible = true;
+            self.search_root = self.current().path.clone();
+            self.search_results.clear();
+        } else if shortcut(egui::Key::F) {
             let filter_id = if self.focused_right { "folder_filter_right" } else { "folder_filter" };
             ctx.memory_mut(|m| m.request_focus(egui::Id::unique(filter_id)));
+        }
+        if ctx.input(|i|i.key_pressed(egui::Key::F3)) {
+            self.preview_visible = !self.preview_visible;
+            self.preview_request = None;
         }
         if ctx.input(|i| i.key_pressed(egui::Key::F5)) { self.refresh(); }
         if ctx.input(|i| i.key_pressed(egui::Key::F6)) {
@@ -605,6 +780,22 @@ impl Veldir {
         });
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
+            if ui.button("⌕ Cerca").on_hover_text("Ricerca nelle sottocartelle · Ctrl+Maiusc+F").clicked() {
+                self.search_visible = true;
+                self.search_root = self.current().path.clone();
+                self.search_results.clear();
+            }
+            if ui.button(if self.preview_visible { "▤ Chiudi anteprima" } else { "▤ Anteprima" })
+                .on_hover_text("Anteprima testuale e dettagli · F3").clicked() {
+                self.preview_visible = !self.preview_visible;
+                self.preview_request = None;
+            }
+            if ui.button(if self.dark_theme { "☼ Tema chiaro" } else { "☾ Tema scuro" })
+                .on_hover_text("Cambia il tema di Veldir").clicked() {
+                self.dark_theme = !self.dark_theme;
+                if self.dark_theme { self.context.set_visuals(egui::Visuals::dark()); }
+                else { self.context.set_visuals(egui::Visuals::light()); }
+            }
             if ui.button(if self.sidebar_visible { "◧ Nascondi barra" } else { "☰ Mostra barra" })
                 .on_hover_text("Mostra/nascondi la barra laterale").clicked() {
                 self.sidebar_visible = !self.sidebar_visible;
@@ -618,6 +809,13 @@ impl Veldir {
             let single = self.selected_one().is_some();
             if ui.add_enabled(!self.busy && single, egui::Button::new("Rinomina"))
                 .on_hover_text("F2").clicked() { self.prepare_rename(); }
+            if ui.add_enabled(!self.busy && self.selected().len()>1, egui::Button::new("Rinomina più file"))
+                .on_hover_text("Numerazione e sostituzione di testo").clicked() {
+                self.dialog = Dialog::BatchRename {
+                    sources:self.selected(), prefix:String::new(), find:String::new(),
+                    replace:String::new(), start:"1".into()
+                };
+            }
             if ui.add_enabled(!self.busy && selected, egui::Button::new("Copia"))
                 .on_hover_text("Ctrl+C").clicked() { self.clipboard_set(false); }
             if ui.add_enabled(!self.busy && selected, egui::Button::new("Taglia"))
@@ -676,6 +874,7 @@ impl Veldir {
     fn files_ui(&mut self, ui: &mut egui::Ui, right: bool) {
         let mut open = None;
         let mut click = None;
+        let mut menu_action: Option<(&'static str,PathBuf)> = None;
         let mut requested_sort = None;
         let tab = self.panel(right);
         let filter = tab.filter.to_lowercase();
@@ -721,7 +920,16 @@ impl Veldir {
                 for row in range {
                     let item = &tab.entries[indices[row]];
                     let selected = tab.selected.contains(&item.path);
-                    let name = format!("{}  {}", if item.is_dir { "▸" } else { "·" }, item.name);
+                    let extension = item.path.extension().and_then(|s|s.to_str())
+                        .unwrap_or("").to_ascii_lowercase();
+                    let symbol = if item.is_dir { "▣" } else { match extension.as_str() {
+                        "pdf" => "▧", "doc" | "docx" | "txt" | "md" => "▤",
+                        "xls" | "xlsx" | "csv" => "▥",
+                        "jpg" | "jpeg" | "png" | "webp" | "gif" => "▨",
+                        "zip" | "7z" | "rar" => "▦",
+                        "exe" | "msi" => "◈", _ => "▫",
+                    }};
+                    let name = format!("{symbol}   {}",item.name);
                     let file_type = if item.is_dir { "Cartella".to_owned() }
                         else { item.path.extension().and_then(|e| e.to_str())
                             .map(str::to_ascii_uppercase).unwrap_or_else(|| "File".into()) };
@@ -738,6 +946,19 @@ impl Veldir {
                         if !dual { ui.label(RichText::new(modified).color(TEXT_MUTED).small()); }
                         r
                     }).inner.on_hover_text(item.path.display().to_string());
+                    response.context_menu(|ui| {
+                        ui.label(RichText::new(&item.name).strong());
+                        ui.separator();
+                        for (label,action) in [
+                            ("Apri","open"),("Copia","copy"),("Taglia","cut"),
+                            ("Rinomina","rename"),("Dettagli","details"),("Cestino","trash")
+                        ] {
+                            if ui.button(label).clicked() {
+                                menu_action = Some((action,item.path.clone()));
+                                ui.close();
+                            }
+                        }
+                    });
                     if response.clicked() {
                         click = Some((item.path.clone(), ui.input(|i| i.modifiers)));
                     }
@@ -758,6 +979,21 @@ impl Veldir {
             self.open_entry(path);
         }
         if let Some(by) = requested_sort { self.change_sort(right, by); }
+        if let Some((action,path)) = menu_action {
+            self.focus(right);
+            let tab=self.current_mut();
+            tab.selected.clear();tab.selected.insert(path.clone());
+            tab.anchor=Some(path.clone());
+            match action {
+                "open" => self.open_entry(path),
+                "copy" => self.clipboard_set(false),
+                "cut" => self.clipboard_set(true),
+                "rename" => self.prepare_rename(),
+                "details" => {self.preview_visible=true;self.preview_request=None;},
+                "trash" => self.prepare_trash(),
+                _ => {}
+            }
+        }
     }
 
     fn pane_ui(&mut self, ui: &mut egui::Ui, right: bool) {
@@ -815,6 +1051,7 @@ impl Veldir {
     fn dialog_ui(&mut self, ctx: &egui::Context) {
         let mut job = None;
         let mut close = false;
+        let mut dialog_error = None;
         let parent_path = self.current().path.clone();
         match &mut self.dialog {
             Dialog::None => return,
@@ -845,6 +1082,38 @@ impl Veldir {
                             if ui.button("Annulla").clicked() { close = true; }
                         });
                     });
+            }
+            Dialog::BatchRename {sources,prefix,find,replace,start} => {
+                egui::Window::new("Rinomina multipla").collapsible(false).resizable(true)
+                    .default_width(480.0).show(ctx,|ui| {
+                    ui.label(format!("{} file selezionati. Numero + prefisso + nome originale.",sources.len()));
+                    ui.horizontal(|ui| { ui.label("Prefisso"); ui.text_edit_singleline(prefix); });
+                    ui.horizontal(|ui| { ui.label("Cerca testo"); ui.text_edit_singleline(find); });
+                    ui.horizontal(|ui| { ui.label("Sostituisci con"); ui.text_edit_singleline(replace); });
+                    ui.horizontal(|ui| { ui.label("Numerazione da"); ui.text_edit_singleline(start); });
+                    let plan = start.parse::<u32>().map_err(|_|"Numero iniziale non valido".to_owned())
+                        .and_then(|n| fs_ops::rename_plan(sources,prefix,find,replace,n));
+                    ui.separator();
+                    match &plan {
+                        Ok(plan) => {
+                            ui.label("Anteprima dei primi cinque nomi:");
+                            for (source,name) in plan.iter().take(5) {
+                                ui.label(format!("{}  →  {name}",
+                                    source.file_name().unwrap_or_default().to_string_lossy()));
+                            }
+                        }
+                        Err(err) => {ui.colored_label(Color32::LIGHT_RED,err); }
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Rinomina i file").clicked() {
+                            match plan {
+                                Ok(changes) => {job=Some(Job::RenameMany{changes});close=true;}
+                                Err(err) => {dialog_error=Some(err);}
+                            }
+                        }
+                        if ui.button("Annulla").clicked() {close=true;}
+                    });
+                });
             }
             Dialog::Delete(paths) => {
                 egui::Window::new("Sposta nel Cestino?").collapsible(false).resizable(false)
@@ -904,6 +1173,7 @@ impl Veldir {
             }
         }
         if close { self.dialog = Dialog::None; }
+        if let Some(err) = dialog_error { self.status = format!("Rinomina: {err}"); }
         if let Some(job) = job { self.begin_job(job); }
     }
 }
@@ -911,12 +1181,13 @@ impl Veldir {
 impl eframe::App for Veldir {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.pump();
+        self.update_preview();
         self.accept_os_drop(ui.ctx());
         self.keyboard(ui.ctx());
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("◈ VELDIR").strong().size(18.0).color(ACCENT));
-            ui.label(RichText::new("0.3.0   •   FILE MANAGER FOR WINDOWS").small().color(TEXT_MUTED));
+            ui.label(RichText::new("0.4.0   •   FILE MANAGER FOR WINDOWS").small().color(TEXT_MUTED));
         });
         ui.add_space(8.0);
         self.tabs_ui(ui);
@@ -986,10 +1257,22 @@ impl eframe::App for Veldir {
             ui.label(RichText::new(format!("{count} elementi  ·  {} selezionati", tab.selected.len())).small().color(TEXT_MUTED));
             ui.label(RichText::new(tab.path.display().to_string()).small().color(TEXT_MUTED));
             ui.separator();
-            if self.busy { ui.spinner(); }
+            if self.busy {
+                ui.spinner();
+                if let Some((done,total))=self.job_progress {
+                    ui.add(egui::ProgressBar::new(done as f32/total.max(1) as f32)
+                        .desired_width(135.0).text(format!("{done}/{total}")));
+                }
+                if ui.button("Annulla").on_hover_text("Interrompe tra un elemento e il successivo").clicked() {
+                    self.job_cancel.store(true,Ordering::Relaxed);
+                    self.status="Annullamento richiesto…".into();
+                }
+            }
             ui.label(RichText::new(&self.status).small().color(TEXT_MUTED));
         });
         self.dialog_ui(ui.ctx());
+        self.search_ui(ui.ctx());
+        self.preview_ui(ui.ctx());
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -1001,6 +1284,8 @@ impl eframe::App for Veldir {
             dual_pane: self.secondary.is_some(),
             sidebar_visible: self.sidebar_visible,
             split_ratio: self.split_ratio,
+            dark_theme: self.dark_theme,
+            preview_visible: self.preview_visible,
         };
         eframe::set_value(storage, "veldir_state", &saved);
     }

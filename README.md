@@ -2,6 +2,12 @@
 
 Build di sviluppo. I criteri per la 1.0 sono in RELEASE_CHECKLIST.md e lo stato delle fasi in ROADMAP.md. Il collaudo GUI su hardware reale resta necessario.
 
+Veldir è un progetto **open source con licenza MIT**, indipendente e non affiliato a File Pilot. Lo stato 0.10.0-dev non è una release stabile: il collaudo reale e i criteri della [issue #13](https://github.com/blackkiteo/Veldir/issues/13) sono ancora aperti.
+
+## Contribuire e sicurezza
+
+Prima di contribuire, consultare la [checklist della Pull Request](.github/pull_request_template.md). Vulnerabilità e credenziali vanno segnalate privatamente secondo [SECURITY.md](SECURITY.md), **mai nelle issue pubbliche**. Per la protezione del ramo principale e le impostazioni a carico del proprietario, consultare [la checklist per il repository pubblico](docs/PUBLIC_REPOSITORY_CHECKLIST.md). Le scansioni automatiche non escludono ogni rischio.
+
 ## Funzioni di questa integrazione
 - Colonne opzionali e ridimensionabili, preferenze salvate; metadati adattivi nel doppio pannello.
 - Frecce, Home/Fine/Pagina, Maiusc per selezione, ricerca digitando, Backspace e focus della riga.

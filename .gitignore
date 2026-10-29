@@ -5,3 +5,16 @@
 *.pdb
 *.log
 .DS_Store
+
+# Never publish local runtime data, generated packages or credentials.
+/VeldirData/
+/dist/
+/build/
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.pem
+*.key
+*.mobileprovision

@@ -1,4 +1,4 @@
-# Veldir — specifiche tecniche v0.7.0
+# Veldir — specifiche tecniche v0.8.0
 
 ## Ambito
 Windows 10/11 x64. UI Rust + eframe/egui `=0.37.0` (renderer OpenGL/glow). Prototipo standalone senza Electron, account, telemetria o sincronizzazione in rete integrata. Licenza MIT.
@@ -46,6 +46,12 @@ Le operazioni batch non sono transazionali: se la destinazione cambia durante l'
 - Cache GPU per icone per-estensione e massimo 128 miniature; caricamento lazy con massimo 6 richieste thumbnail e 4 richieste icone concorrenti.
 - Texture anteprima separata dai dettagli testuali; interruttore miniature persistente.
 - I risultati tardivi di un'anteprima precedente vengono scartati grazie al numero di generazione.
+
+## Aggiornamento 0.8.0
+- `src/pdf_view.rs`: parser PDF read-only in background. File <=12 MiB, massimo 2.000 pagine, testo delle prime due e limite di decompressione di 512 KiB per pagina.
+- Non esiste ancora il rendering bitmap delle pagine PDF, OCR o ricerca completa dentro i PDF.
+- `src/app.rs`: schede in Frame, intestazione, toolbar con gruppi/menu, pannello attivo evidenziato e dimensione selezionata in barra di stato.
+- Le modifiche alla UI non devono introdurre trasferimenti implicitamente distruttivi.
 
 ## Roadmap
 1. **0.2.1:** correzione focus e selezione, verifica CI Windows. Collaudo GUI ancora da eseguire.

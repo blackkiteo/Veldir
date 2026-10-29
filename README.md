@@ -8,6 +8,14 @@ Veldir è un progetto **open source con licenza MIT**, indipendente e non affili
 
 Prima di contribuire, consultare la [checklist della Pull Request](.github/pull_request_template.md). Vulnerabilità e credenziali vanno segnalate privatamente secondo [SECURITY.md](SECURITY.md), **mai nelle issue pubbliche**. Per la protezione del ramo principale e le impostazioni a carico del proprietario, consultare [la checklist per il repository pubblico](docs/PUBLIC_REPOSITORY_CHECKLIST.md). Le scansioni automatiche non escludono ogni rischio.
 
+## Correzione copia/incolla da tastiera
+
+- Con un file selezionato, **Ctrl+C** lo copia negli appunti di Veldir e in quelli di Windows (formato CF_HDROP); **Ctrl+X** prepara uno spostamento solo interno.
+- **Ctrl+V** incolla nel pannello/cartella attiva anche file copiati da Esplora file: prima mostra la conferma con scelta tra Interrompi, Salta o Conserva entrambi in caso di collisione. La copia non sovrascrive file esistenti.
+- **Ctrl+Maiusc+V** resta disponibile per importare esplicitamente i file presenti negli appunti di Windows; la gestione dell'intenzione "Taglia" proveniente da Esplora resta prudenzialmente **solo copia**.
+- I campi di testo (filtro, percorso, ricerca, rinomina) conservano il copia/incolla di testo standard; eventuali scorciatoie sui file non vengono eseguite durante la modifica dei campi.
+- L'intercettazione di Ctrl+V copre anche gli appunti CF_HDROP senza contenuto testuale; questo comportamento va verificato sulla GUI Windows reale.
+
 ## Funzioni di questa integrazione
 - Colonne opzionali e ridimensionabili, preferenze salvate; metadati adattivi nel doppio pannello.
 - Frecce, Home/Fine/Pagina, Maiusc per selezione, ricerca digitando, Backspace e focus della riga.
@@ -78,7 +86,7 @@ cargo build --locked --release
 
 - CF_HDROP è per file realmente presenti sul filesystem: file virtuali in app come Outlook non sono gestiti. Limite 500 elementi esportati.
 - Il trascinamento interno vale solo **tra due pannelli Veldir**, non verso Esplora file o altre finestre. Per trasferire verso Esplora utilizzare Ctrl+C e poi Incolla lì.
-- L'esportazione pubblica l'intenzione di **copia**, non di taglio. Incollare con Ctrl+V *dentro Veldir* usa la clipboard interna; per importare quella Windows usare Ctrl+Maiusc+V.
+- L'esportazione pubblica l'intenzione di **copia**, non di taglio. **Nella v0.10.0-dev corretta**, Ctrl+V preferisce l'elenco di file corrente della clipboard Windows e riconosce anche quelli copiati da Esplora; Ctrl+Maiusc+V resta un comando esplicito. Ctrl+X rimane solo interno a Veldir.
 - Nessun rollback automatico dei batch; link/junction e preservazione completa ACL/metadati non sono ancora supportati.
 
 ## Novità v0.5.0 — Trasferimenti più sicuri e clipboard Esplora
@@ -164,7 +172,7 @@ Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Wind
 | Modifica percorso / filtro pannello attivo | Ctrl+L / Ctrl+F |
 | Indietro / avanti / cartella superiore | Alt+← / Alt+→ / Alt+↑ |
 | Aggiorna entrambi i pannelli e le schede | F5 |
-| Copia anche in Esplora / taglia interno / incolla interno | Ctrl+C / Ctrl+X / Ctrl+V |
+| Copia file verso Veldir e Windows / taglia interno / incolla file Veldir o Esplora | Ctrl+C / Ctrl+X / Ctrl+V |
 | Importa da clipboard Esplora con conferma | Ctrl+Maiusc+V |
 | Deseleziona / Rinomina uno / Cestino multiplo | Esc / F2 / Canc |
 | Apri un elemento | Invio / doppio clic |

@@ -65,7 +65,7 @@ fn file_header_ui(
         let caption = if key == Some(by) {
             format!("{label} {}", if descending { "v" } else { "^" })
         } else { label.to_owned() };
-        let response = ui.interact(cell, ui.id().with(("column_header", index)),
+        let response = ui.interact(cell, ui.scope_id().with(("column_header", index)),
             if key.is_some() { egui::Sense::click() } else { egui::Sense::hover() });
         if response.hovered() && key.is_some() {
             ui.painter().rect_filled(cell, egui::CornerRadius::same(3),
@@ -1989,7 +1989,6 @@ mod tests {
         tab.filter = "txt".into();
         let modifiers = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
         let output = ctx.run_ui(egui::RawInput {
-            modifiers,
             events: vec![egui::Event::Key {
                 key: egui::Key::A, physical_key: None, pressed: true,
                 repeat: false, modifiers,

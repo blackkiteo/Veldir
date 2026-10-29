@@ -611,6 +611,18 @@ impl Veldir {
         }
     }
 
+    fn import_explorer_clipboard(&mut self) {
+        if self.busy || !matches!(self.dialog, Dialog::None) { return; }
+        match crate::shell_clipboard::files_from_explorer() {
+            Ok(sources) => {
+                self.dialog = Dialog::ExternalDrop {
+                    sources, destination: self.current().path.clone(),
+                };
+            }
+            Err(error) => { self.status = format!("Clipboard Windows: {error}"); }
+        }
+    }
+
     fn paste(&mut self) {
         if let Some(clip) = self.clipboard.clone() {
             let destination_folder = self.current().path.clone();
@@ -694,7 +706,9 @@ impl Veldir {
         if !ctx.egui_wants_keyboard_input() && !self.busy && matches!(self.dialog, Dialog::None) {
             if shortcut(egui::Key::C) { self.clipboard_set(false); }
             if shortcut(egui::Key::X) { self.clipboard_set(true); }
-            if shortcut(egui::Key::V) { self.paste(); }
+            if ctx.input(|i| i.modifiers.command && i.modifiers.shift
+                && i.key_pressed(egui::Key::V)) { self.import_explorer_clipboard(); }
+            else if shortcut(egui::Key::V) { self.paste(); }
             if shortcut(egui::Key::A) { self.select_all_visible(); }
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.current_mut().selected.clear();
@@ -828,6 +842,10 @@ impl Veldir {
                 .on_hover_text("Ctrl+X").clicked() { self.clipboard_set(true); }
             if ui.add_enabled(!self.busy && self.clipboard.is_some(), egui::Button::new("Incolla"))
                 .on_hover_text("Ctrl+V · clipboard interna").clicked() { self.paste(); }
+            if ui.add_enabled(!self.busy, egui::Button::new("Da Esplora"))
+                .on_hover_text("Copia file dalla clipboard Windows · Ctrl+Maiusc+V").clicked() {
+                self.import_explorer_clipboard();
+            }
             if ui.add_enabled(!self.busy && selected, egui::Button::new("Cestino"))
                 .on_hover_text("Canc · con conferma").clicked() { self.prepare_trash(); }
             ui.separator();
@@ -1155,9 +1173,9 @@ impl Veldir {
             Dialog::ExternalDrop { sources, destination } => {
                 let left = self.tabs[self.active].path.clone();
                 let right = self.secondary.as_ref().map(|p| p.path.clone());
-                egui::Window::new("Importa file trascinati").collapsible(false).resizable(false)
+                egui::Window::new("Importa file da Windows").collapsible(false).resizable(false)
                     .show(ctx, |ui| {
-                        ui.label(format!("{} elementi trascinati da Windows", sources.len()));
+                        ui.label(format!("{} file/cartelle selezionati da Windows", sources.len()));
                         ui.label("Scegli dove COPIARLI. Le sorgenti non verranno rimosse.");
                         ui.add_space(6.0);
                         ui.selectable_value(destination, left.clone(), format!("Sinistra: {}", left.display()));
@@ -1287,7 +1305,7 @@ impl eframe::App for Veldir {
                         }
                     }
                 }
-                if ui.button("Annulla").on_hover_text("Interrompe tra un elemento e il successivo").clicked() {
+                if ui.button("Annulla").on_hover_text("Durante la copia interrompe anche il file in corso, senza pubblicare il file parziale").clicked() {
                     self.job_cancel.store(true,Ordering::Relaxed);
                     self.status="Annullamento richiesto…".into();
                 }

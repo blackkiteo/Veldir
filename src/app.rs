@@ -864,27 +864,48 @@ impl Veldir {
     fn tabs_ui(&mut self, ui: &mut egui::Ui) {
         let mut switch = None;
         let mut close = None;
+        let dark=self.dark_theme;
         ui.horizontal_wrapped(|ui| {
-            for (i, tab) in self.tabs.iter().enumerate() {
-                let title = tab.path.file_name().and_then(|s| s.to_str())
-                    .map(str::to_owned).unwrap_or_else(|| tab.path.display().to_string());
-                let title = if title.chars().count() > 22 { format!("{}…", title.chars().take(21).collect::<String>()) } else { title };
-                if ui.add(egui::Button::new(format!("  {title}  ")).selected(self.active == i))
-                    .on_hover_text(tab.path.display().to_string()).clicked() { switch = Some(i); }
-                if ui.small_button("×").on_hover_text("Chiudi scheda").clicked() { close = Some(tab.id); }
+            for (i,tab) in self.tabs.iter().enumerate() {
+                let selected=self.active==i;
+                let name=tab.path.file_name().and_then(|p|p.to_str())
+                    .map(str::to_owned).unwrap_or_else(||tab.path.display().to_string());
+                let title=if name.chars().count()>19 {
+                    format!("{}…",name.chars().take(18).collect::<String>())
+                }else{name};
+                let fill=if selected {
+                    if dark {Color32::from_rgb(42,63,88)}
+                    else {Color32::from_rgb(218,233,249)}
+                }else if dark {Color32::from_rgb(29,36,47)}
+                    else {Color32::from_rgb(235,238,243)};
+                egui::Frame::new().fill(fill)
+                    .corner_radius(egui::CornerRadius::same(9))
+                    .inner_margin(egui::Margin::symmetric(7,3)).show(ui,|ui|{
+                    ui.horizontal(|ui|{
+                        let caption=if selected {
+                            RichText::new(format!("▣  {title}")).strong()
+                        }else {RichText::new(format!("▧  {title}"))};
+                        if ui.add(egui::Button::new(caption).frame(false))
+                            .on_hover_text(tab.path.display().to_string()).clicked(){
+                            switch=Some(i);
+                        }
+                        if ui.add(egui::Button::new("×").frame(false))
+                            .on_hover_text("Chiudi scheda").clicked(){close=Some(tab.id);}
+                    });
+                });
             }
-            if ui.button("＋").on_hover_text("Nuova scheda · Ctrl+T").clicked() {
-                switch = Some(usize::MAX);
+            if ui.button("＋").on_hover_text("Nuova scheda · Ctrl+T").clicked(){
+                switch=Some(usize::MAX);
             }
         });
-        if let Some(id) = close { self.close_tab(id); }
-        if let Some(index) = switch {
-            if index == usize::MAX { self.add_tab(self.current().path.clone()); }
-            else if index < self.tabs.len() {
-                self.focused_right = false;
-                self.active = index;
-                self.address_input = self.current().path.display().to_string();
-                self.editing_address = false;
+        if let Some(id)=close{self.close_tab(id);}
+        if let Some(index)=switch{
+            if index==usize::MAX{self.add_tab(self.current().path.clone());}
+            else if index<self.tabs.len(){
+                self.focused_right=false;
+                self.active=index;
+                self.address_input=self.current().path.display().to_string();
+                self.editing_address=false;
             }
         }
     }
@@ -913,106 +934,130 @@ impl Veldir {
         if let Some(target) = navigation { self.navigate(target); }
     }
 
-    fn toolbar_ui(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            if ui.add_enabled(!self.current().back.is_empty(), egui::Button::new("←"))
-                .on_hover_text("Indietro · Alt+←").clicked() { self.history_back(); }
-            if ui.add_enabled(!self.current().forward.is_empty(), egui::Button::new("→"))
-                .on_hover_text("Avanti · Alt+→").clicked() { self.history_forward(); }
-            if ui.button("↑").on_hover_text("Cartella superiore · Alt+↑").clicked() { self.up(); }
-            if ui.button("⟳").on_hover_text("Aggiorna · F5").clicked() { self.refresh(); }
-            ui.separator();
-            if self.editing_address {
-                let r = ui.add(egui::TextEdit::singleline(&mut self.address_input)
-                    .desired_width(ui.available_width().max(270.0).min(600.0) * 0.52)
-                    .id(egui::Id::unique("address_bar")));
-                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    let target = PathBuf::from(self.address_input.trim());
-                    self.navigate(target);
+    fn toolbar_ui(&mut self, ui:&mut egui::Ui) {
+        let dark=self.dark_theme;
+        let background=if dark{Color32::from_rgb(29,37,49)}
+            else{Color32::from_rgb(238,243,249)};
+        egui::Frame::new()
+            .fill(background)
+            .corner_radius(egui::CornerRadius::same(11))
+            .inner_margin(egui::Margin::symmetric(10,9))
+            .show(ui,|ui|{
+            ui.horizontal(|ui|{
+                if ui.add_enabled(!self.current().back.is_empty(),
+                    egui::Button::new("←")).on_hover_text("Indietro · Alt+←").clicked(){
+                    self.history_back();
                 }
-                if ui.button("Vai").clicked() { self.navigate(PathBuf::from(self.address_input.trim())); }
-            } else {
-                if ui.small_button("⌁").on_hover_text("Modifica percorso · Ctrl+L").clicked() {
-                    self.editing_address = true;
-                    self.address_input = self.current().path.display().to_string();
+                if ui.add_enabled(!self.current().forward.is_empty(),
+                    egui::Button::new("→")).on_hover_text("Avanti · Alt+→").clicked(){
+                    self.history_forward();
                 }
-                self.breadcrumbs_ui(ui);
-            }
-        });
-        ui.add_space(6.0);
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("⌕ Cerca").on_hover_text("Ricerca nelle sottocartelle · Ctrl+Maiusc+F").clicked() {
-                self.search_visible = true;
-                self.search_root = self.current().path.clone();
-                self.search_results.clear();
-            }
-            if ui.button(if self.preview_visible { "▤ Chiudi anteprima" } else { "▤ Anteprima" })
-                .on_hover_text("Anteprima immagini, testo e dettagli · F3").clicked() {
-                self.preview_visible = !self.preview_visible;
-                self.preview_request = None;
-            }
-            if ui.button(if self.thumbs_visible { "▦ Miniature ON" } else { "▦ Miniature OFF" })
-                .on_hover_text("Mostra miniature delle immagini negli elenchi").clicked() {
-                self.thumbs_visible = !self.thumbs_visible;
-            }
-            if ui.button(if self.dark_theme { "☼ Tema chiaro" } else { "☾ Tema scuro" })
-                .on_hover_text("Cambia il tema di Veldir").clicked() {
-                self.dark_theme = !self.dark_theme;
-                if self.dark_theme { self.context.set_visuals(egui::Visuals::dark()); }
-                else { self.context.set_visuals(egui::Visuals::light()); }
-            }
-            if ui.button(if self.sidebar_visible { "◧ Nascondi barra" } else { "☰ Mostra barra" })
-                .on_hover_text("Mostra/nascondi la barra laterale").clicked() {
-                self.sidebar_visible = !self.sidebar_visible;
-            }
-            ui.separator();
-            if ui.add_enabled(!self.busy, egui::Button::new("＋ Cartella"))
-                .on_hover_text("Crea cartella").clicked() {
-                self.dialog = Dialog::NewFolder("Nuova cartella".into());
-            }
-            let selected = !self.selected().is_empty();
-            let single = self.selected_one().is_some();
-            if ui.add_enabled(!self.busy && single, egui::Button::new("Rinomina"))
-                .on_hover_text("F2").clicked() { self.prepare_rename(); }
-            if ui.add_enabled(!self.busy && self.selected().len()>1, egui::Button::new("Rinomina più file"))
-                .on_hover_text("Numerazione e sostituzione di testo").clicked() {
-                self.dialog = Dialog::BatchRename {
-                    sources:self.selected(), prefix:String::new(), find:String::new(),
-                    replace:String::new(), start:"1".into()
-                };
-            }
-            if ui.add_enabled(!self.busy && selected, egui::Button::new("Copia"))
-                .on_hover_text("Ctrl+C · esporta anche in Esplora Windows").clicked() {
-                self.clipboard_set(false);
-            }
-            if ui.add_enabled(!self.busy && selected, egui::Button::new("Taglia"))
-                .on_hover_text("Ctrl+X").clicked() { self.clipboard_set(true); }
-            if ui.add_enabled(!self.busy && self.clipboard.is_some(), egui::Button::new("Incolla"))
-                .on_hover_text("Ctrl+V · clipboard interna").clicked() { self.paste(); }
-            if ui.add_enabled(!self.busy && selected, egui::Button::new("Verso Esplora"))
-                .on_hover_text("Copia i percorsi nella clipboard Windows").clicked() {
-                self.copy_selection_to_windows();
-            }
-            if ui.add_enabled(!self.busy, egui::Button::new("Da Esplora"))
-                .on_hover_text("Copia file dalla clipboard Windows · Ctrl+Maiusc+V").clicked() {
-                self.import_explorer_clipboard();
-            }
-            if ui.add_enabled(!self.busy && selected, egui::Button::new("Cestino"))
-                .on_hover_text("Canc · con conferma").clicked() { self.prepare_trash(); }
-            ui.separator();
-            let dual = self.secondary.is_some();
-            if ui.button(if dual { "▣ Pannello singolo" } else { "▥ Due pannelli" })
-                .on_hover_text("Mostra/nascondi il secondo pannello").clicked() { self.toggle_dual(); }
-            if dual {
-                if ui.add_enabled(!self.busy && selected, egui::Button::new("⇢ Copia"))
-                    .on_hover_text("Copia nel pannello opposto").clicked() { self.transfer_to_other(false); }
-                if ui.add_enabled(!self.busy && selected, egui::Button::new("⇢ Sposta"))
-                    .on_hover_text("Sposta nel pannello opposto").clicked() { self.transfer_to_other(true); }
-            }
-            ui.separator();
-            let is_fav = self.favorites.contains(&self.current().path);
-            if ui.button(if is_fav { "★" } else { "☆" })
-                .on_hover_text("Aggiungi/rimuovi preferiti").clicked() { self.toggle_favorite(); }
+                if ui.button("↑").on_hover_text("Cartella superiore").clicked(){self.up();}
+                if ui.button("⟳").on_hover_text("Aggiorna · F5").clicked(){self.refresh();}
+                ui.separator();
+                if self.editing_address {
+                    let response=ui.add(egui::TextEdit::singleline(&mut self.address_input)
+                        .desired_width((ui.available_width()-75.0).max(180.0))
+                        .id(egui::Id::unique("address_bar")));
+                    if (response.lost_focus() && ui.input(|i|i.key_pressed(egui::Key::Enter)))
+                        || ui.button("Vai").clicked(){
+                        self.navigate(PathBuf::from(self.address_input.trim()));
+                    }
+                }else{
+                    if ui.small_button("⌁").on_hover_text("Modifica percorso · Ctrl+L").clicked(){
+                        self.editing_address=true;
+                        self.address_input=self.current().path.display().to_string();
+                    }
+                    self.breadcrumbs_ui(ui);
+                }
+            });
+            ui.add_space(5.0);
+            ui.horizontal_wrapped(|ui|{
+                if ui.button("＋ Nuova cartella").on_hover_text("Crea una cartella").clicked() && !self.busy{
+                    self.dialog=Dialog::NewFolder("Nuova cartella".into());
+                }
+                let selected=!self.selected().is_empty();
+                let one=self.selected_one().is_some();
+                let many=self.selected().len()>1;
+                if ui.add_enabled(!self.busy && selected,egui::Button::new("⧉ Copia"))
+                    .on_hover_text("Ctrl+C · copia anche in Esplora").clicked(){
+                    self.clipboard_set(false);
+                }
+                if ui.add_enabled(!self.busy && self.clipboard.is_some(),
+                    egui::Button::new("▣ Incolla"))
+                    .on_hover_text("Ctrl+V · clipboard interna").clicked(){self.paste();}
+                if ui.button("⌕ Cerca").on_hover_text("Ricerca ricorsiva · Ctrl+Maiusc+F").clicked(){
+                    self.search_visible=true;
+                    self.search_root=self.current().path.clone();
+                    self.search_results.clear();
+                }
+                if ui.button(if self.preview_visible{"▤ Chiudi anteprima"}else{"▤ Anteprima"})
+                    .on_hover_text("Immagini, PDF (testo), dettagli · F3").clicked(){
+                    self.preview_visible=!self.preview_visible;
+                    self.preview_request=None;
+                }
+                let dual=self.secondary.is_some();
+                if ui.button(if dual{"▣ Un pannello"}else{"▥ Due pannelli"})
+                    .on_hover_text("Mostra o nascondi il secondo pannello").clicked(){
+                    self.toggle_dual();
+                }
+
+                ui.menu_button("Operazioni ▾",|ui|{
+                    if ui.add_enabled(!self.busy && one,egui::Button::new("Rinomina  ·  F2"))
+                        .clicked(){self.prepare_rename();ui.close();}
+                    if ui.add_enabled(!self.busy && many,egui::Button::new("Rinomina multipla"))
+                        .clicked(){
+                        self.dialog=Dialog::BatchRename{
+                            sources:self.selected(),prefix:String::new(),find:String::new(),
+                            replace:String::new(),start:"1".into()
+                        };
+                        ui.close();
+                    }
+                    if ui.add_enabled(!self.busy && selected,egui::Button::new("Taglia  ·  Ctrl+X"))
+                        .clicked(){self.clipboard_set(true);ui.close();}
+                    if ui.add_enabled(!self.busy && selected,egui::Button::new("Cestino  ·  Canc"))
+                        .clicked(){self.prepare_trash();ui.close();}
+                    ui.separator();
+                    if ui.add_enabled(!self.busy,egui::Button::new("Importa da Esplora"))
+                        .clicked(){self.import_explorer_clipboard();ui.close();}
+                    if ui.add_enabled(!self.busy && selected,
+                        egui::Button::new("Copia verso Esplora")).clicked(){
+                        self.copy_selection_to_windows();ui.close();
+                    }
+                    if dual {
+                        ui.separator();
+                        if ui.add_enabled(!self.busy && selected,
+                            egui::Button::new("Copia nel pannello opposto")).clicked(){
+                            self.transfer_to_other(false);ui.close();
+                        }
+                        if ui.add_enabled(!self.busy && selected,
+                            egui::Button::new("Sposta nel pannello opposto")).clicked(){
+                            self.transfer_to_other(true);ui.close();
+                        }
+                    }
+                });
+
+                ui.menu_button("Visualizza ▾",|ui|{
+                    if ui.checkbox(&mut self.thumbs_visible,"Miniature immagini").changed(){
+                        ui.close();
+                    }
+                    if ui.checkbox(&mut self.sidebar_visible,"Barra laterale").changed(){
+                        ui.close();
+                    }
+                    let was_dark=self.dark_theme;
+                    if ui.checkbox(&mut self.dark_theme,"Tema scuro").changed(){ui.close();}
+                    if was_dark!=self.dark_theme{
+                        self.context.set_visuals(if self.dark_theme{
+                            egui::Visuals::dark()
+                        }else{egui::Visuals::light()});
+                    }
+                });
+                let favorite=self.favorites.contains(&self.current().path);
+                if ui.button(if favorite{"★"}else{"☆"})
+                    .on_hover_text("Aggiungi o rimuovi dai preferiti").clicked(){
+                    self.toggle_favorite();
+                }
+            });
         });
     }
 
@@ -1424,10 +1469,25 @@ impl eframe::App for Veldir {
         self.update_preview();
         self.accept_os_drop(ui.ctx());
         self.keyboard(ui.ctx());
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("◈ VELDIR").strong().size(18.0).color(ACCENT));
-            ui.label(RichText::new("0.7.0   •   FILE MANAGER FOR WINDOWS").small().color(TEXT_MUTED));
+        ui.add_space(5.0);
+        let dark=self.dark_theme;
+        egui::Frame::new().fill(if dark{Color32::from_rgb(22,30,41)}
+            else{Color32::from_rgb(225,234,245)})
+            .corner_radius(egui::CornerRadius::same(11))
+            .inner_margin(egui::Margin::symmetric(12,9)).show(ui,|ui|{
+            ui.horizontal(|ui|{
+                ui.label(RichText::new("◈  VELDIR").strong().size(21.0).color(ACCENT));
+                ui.label(RichText::new("0.8.0  ·  WINDOWS FILE MANAGER")
+                    .small().color(TEXT_MUTED));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
+                    if self.busy {ui.spinner();}
+                    let path=self.current().path.clone();
+                    let label=path.file_name().and_then(|n|n.to_str())
+                        .unwrap_or("Unità");
+                    ui.label(RichText::new(label).strong().color(TEXT_MUTED))
+                        .on_hover_text(path.display().to_string());
+                });
+            });
         });
         ui.add_space(8.0);
         self.tabs_ui(ui);

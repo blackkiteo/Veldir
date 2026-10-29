@@ -110,6 +110,11 @@ struct InternalClipboard {
     cut: bool,
 }
 
+struct DragIntent {
+    sources: Vec<PathBuf>,
+    source_right: bool,
+}
+
 pub struct Veldir {
     tabs: Vec<Tab>,
     active: usize,
@@ -123,6 +128,7 @@ pub struct Veldir {
     shortcuts: Vec<(String, PathBuf)>,
     drives: Vec<PathBuf>,
     clipboard: Option<InternalClipboard>,
+    drag_intent: Option<DragIntent>,
     busy: bool,
     dialog: Dialog,
     status: String,
@@ -190,7 +196,8 @@ impl Veldir {
             tabs: Vec::new(), active: 0, secondary: None, focused_right: false,
             next_id: 1, tx, rx, context: cc.egui_ctx.clone(),
             favorites: saved.favorites, shortcuts, drives,
-            clipboard: None, busy: false, dialog: Dialog::None,
+            clipboard: None, drag_intent: None,
+            busy: false, dialog: Dialog::None,
             status: "Pronto".into(), editing_address: false, address_input: String::new(),
             sidebar_visible: saved.sidebar_visible,
             split_ratio: bounded_split_ratio(saved.split_ratio),
@@ -604,10 +611,28 @@ impl Veldir {
 
     fn clipboard_set(&mut self, cut: bool) {
         let sources = self.selected();
-        if !sources.is_empty() {
-            self.clipboard = Some(InternalClipboard { sources, cut });
-            self.status = if cut { "Elemento tagliato (clipboard interna)".into() }
-                else { "Elemento copiato (clipboard interna)".into() };
+        if sources.is_empty() { return; }
+        self.clipboard = Some(InternalClipboard { sources: sources.clone(), cut });
+        if cut {
+            // Cut stays local until a confirmed move. Never publish a MOVE intent to Explorer.
+            self.status = "Taglia pronto in Veldir: incolla con Ctrl+V (solo interno)".into();
+        } else {
+            match crate::shell_clipboard::copy_files_to_explorer(&sources) {
+                Ok(()) => self.status = format!(
+                    "{} elementi copiati: clipboard Veldir e Windows", sources.len()),
+                Err(error) => self.status = format!(
+                    "Copia interna pronta. Clipboard Windows non aggiornata: {error}"),
+            }
+        }
+    }
+
+    fn copy_selection_to_windows(&mut self) {
+        let sources=self.selected();
+        if sources.is_empty() { return; }
+        match crate::shell_clipboard::copy_files_to_explorer(&sources) {
+            Ok(()) => self.status = format!(
+                "{} elementi copiati nella clipboard Windows",sources.len()),
+            Err(err) => self.status = format!("Clipboard Windows: {err}"),
         }
     }
 
@@ -837,11 +862,17 @@ impl Veldir {
                 };
             }
             if ui.add_enabled(!self.busy && selected, egui::Button::new("Copia"))
-                .on_hover_text("Ctrl+C").clicked() { self.clipboard_set(false); }
+                .on_hover_text("Ctrl+C · esporta anche in Esplora Windows").clicked() {
+                self.clipboard_set(false);
+            }
             if ui.add_enabled(!self.busy && selected, egui::Button::new("Taglia"))
                 .on_hover_text("Ctrl+X").clicked() { self.clipboard_set(true); }
             if ui.add_enabled(!self.busy && self.clipboard.is_some(), egui::Button::new("Incolla"))
                 .on_hover_text("Ctrl+V · clipboard interna").clicked() { self.paste(); }
+            if ui.add_enabled(!self.busy && selected, egui::Button::new("Verso Esplora"))
+                .on_hover_text("Copia i percorsi nella clipboard Windows").clicked() {
+                self.copy_selection_to_windows();
+            }
             if ui.add_enabled(!self.busy, egui::Button::new("Da Esplora"))
                 .on_hover_text("Copia file dalla clipboard Windows · Ctrl+Maiusc+V").clicked() {
                 self.import_explorer_clipboard();
@@ -898,6 +929,7 @@ impl Veldir {
     fn files_ui(&mut self, ui: &mut egui::Ui, right: bool) {
         let mut open = None;
         let mut click = None;
+        let mut drag_start: Option<PathBuf> = None;
         let mut menu_action: Option<(&'static str,PathBuf)> = None;
         let mut requested_sort = None;
         let tab = self.panel(right);
@@ -964,6 +996,7 @@ impl Veldir {
                     }).unwrap_or_else(|| "—".into());
                     let response = ui.horizontal(|ui| {
                         let r = ui.add_sized([w_name, 25.0], egui::Button::new(name)
+                            .sense(egui::Sense::click_and_drag())
                             .selected(selected).frame(selected));
                         if !dual { ui.add_sized([w_type, 25.0], egui::Label::new(file_type)); }
                         ui.add_sized([w_size, 25.0], egui::Label::new(size));
@@ -986,6 +1019,9 @@ impl Veldir {
                     if response.clicked() {
                         click = Some((item.path.clone(), ui.input(|i| i.modifiers)));
                     }
+                    if response.drag_started() {
+                        drag_start = Some(item.path.clone());
+                    }
                     if response.double_clicked() { open = Some(item.path.clone()); }
                 }
             });
@@ -1003,6 +1039,16 @@ impl Veldir {
             self.open_entry(path);
         }
         if let Some(by) = requested_sort { self.change_sort(right, by); }
+        if let Some(path) = drag_start {
+            if self.secondary.is_some() && !self.busy && matches!(self.dialog, Dialog::None) {
+                let tab = self.panel(right);
+                let sources: Vec<PathBuf> = if tab.selected.contains(&path) {
+                    tab.selected.iter().cloned().collect()
+                } else { vec![path] };
+                self.drag_intent = Some(DragIntent { sources, source_right: right });
+                self.status = "Rilascia nel pannello opposto per proporre una copia".into();
+            }
+        }
         if let Some((action,path)) = menu_action {
             self.focus(right);
             let tab=self.current_mut();
@@ -1018,6 +1064,27 @@ impl Veldir {
                 _ => {}
             }
         }
+    }
+
+    /// UI-only drag between panels. No OS file drop is synthesized: the
+    /// result always opens an explicit copy-only confirmation dialog.
+    fn finish_internal_drag(&mut self, ctx: &egui::Context, areas: [Option<egui::Rect>;2]) {
+        if !ctx.input(|i| i.pointer.any_released()) { return; }
+        let Some(drag)=self.drag_intent.take() else {return;};
+        if self.busy || !matches!(self.dialog, Dialog::None) { return; }
+        let Some(pos)=ctx.input(|i|i.pointer.interact_pos()) else {return;};
+        let target_right = !drag.source_right;
+        if let Some(area)=areas[usize::from(target_right)] {
+            if area.contains(pos) {
+                let destination=self.panel(target_right).path.clone();
+                self.dialog=Dialog::ExternalDrop {
+                    sources:drag.sources,
+                    destination,
+                };
+                return;
+            }
+        }
+        self.status="Trascinamento annullato (nessuna modifica)".into();
     }
 
     fn pane_ui(&mut self, ui: &mut egui::Ui, right: bool) {
@@ -1173,9 +1240,9 @@ impl Veldir {
             Dialog::ExternalDrop { sources, destination } => {
                 let left = self.tabs[self.active].path.clone();
                 let right = self.secondary.as_ref().map(|p| p.path.clone());
-                egui::Window::new("Importa file da Windows").collapsible(false).resizable(false)
+                egui::Window::new("Conferma copia dei file").collapsible(false).resizable(false)
                     .show(ctx, |ui| {
-                        ui.label(format!("{} file/cartelle selezionati da Windows", sources.len()));
+                        ui.label(format!("{} elementi da copiare", sources.len()));
                         ui.label("Scegli dove COPIARLI. Le sorgenti non verranno rimosse.");
                         ui.add_space(6.0);
                         ui.selectable_value(destination, left.clone(), format!("Sinistra: {}", left.display()));
@@ -1211,7 +1278,7 @@ impl eframe::App for Veldir {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("◈ VELDIR").strong().size(18.0).color(ACCENT));
-            ui.label(RichText::new("0.5.0   •   FILE MANAGER FOR WINDOWS").small().color(TEXT_MUTED));
+            ui.label(RichText::new("0.6.0   •   FILE MANAGER FOR WINDOWS").small().color(TEXT_MUTED));
         });
         ui.add_space(8.0);
         self.tabs_ui(ui);
@@ -1220,6 +1287,7 @@ impl eframe::App for Veldir {
         ui.add_space(10.0);
         ui.separator();
         let content_height = (ui.available_height() - 46.0).max(230.0);
+        let mut pane_areas: [Option<egui::Rect>;2] = [None,None];
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), content_height),
             egui::Layout::left_to_right(egui::Align::Min),
@@ -1234,11 +1302,12 @@ impl eframe::App for Veldir {
                     let usable = (available - 12.0).max(450.0);
                     let left_width = (usable * self.split_ratio).clamp(220.0, usable - 220.0);
                     let right_width = usable - left_width;
-                    ui.allocate_ui_with_layout(
+                    let left = ui.allocate_ui_with_layout(
                         egui::vec2(left_width, content_height),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| { ui.set_width(left_width); self.pane_ui(ui, false); },
                     );
+                    pane_areas[0] = Some(left.response.rect);
 
                     // A draggable splitter, persisting its relative width across launches.
                     let (rect, splitter) = ui.allocate_exact_size(
@@ -1258,21 +1327,24 @@ impl eframe::App for Veldir {
                         ui.ctx().request_repaint();
                     }
 
-                    ui.allocate_ui_with_layout(
+                    let right = ui.allocate_ui_with_layout(
                         egui::vec2(right_width, content_height),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| { ui.set_width(right_width); self.pane_ui(ui, true); },
                     );
+                    pane_areas[1] = Some(right.response.rect);
                 } else {
                     let width = ui.available_width().max(400.0);
-                    ui.allocate_ui_with_layout(
+                    let left = ui.allocate_ui_with_layout(
                         egui::vec2(width, content_height),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| { ui.set_width(width); self.pane_ui(ui, false); },
                     );
+                    pane_areas[0] = Some(left.response.rect);
                 }
             },
         );
+        self.finish_internal_drag(ui.ctx(),pane_areas);
         ui.separator();
         ui.horizontal(|ui| {
             let tab = self.current();

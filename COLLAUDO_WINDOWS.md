@@ -1,4 +1,4 @@
-# Piano di collaudo Veldir 0.5.0 — Windows 10/11
+# Piano di collaudo Veldir 0.6.0 — Windows 10/11
 
 **Eseguire solo su file di prova, mai su dati importanti.** Il passaggio della CI non sostituisce un collaudo manuale della GUI e delle operazioni.
 
@@ -32,6 +32,15 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 | CLIP-01 | Copia 2 file con Ctrl+C in Esplora, in Veldir usa «Da Esplora» | Finestra di conferma, entrambi copiati, originali intatti |
 | CLIP-02 | Taglia un file in Esplora, importalo in Veldir | Solo copia: file originale ancora presente |
 | CLIP-03 | Clipboard contenente testo, premi «Da Esplora» | Messaggio di errore, nessuna modifica ai file |
+| CLIP-04 | Seleziona due file in Veldir, Ctrl+C, poi Ctrl+V in Esplora | I file sono copiati nella cartella Windows; originali intatti |
+| CLIP-05 | Seleziona una cartella in Veldir, «Verso Esplora», Incolla in Esplora | Copia della cartella con conferma Windows standard |
+| CLIP-06 | Usa Ctrl+X in Veldir, poi incolla in Esplora | Nessun taglio della sorgente: il taglio rimane interno a Veldir |
+| CLIP-07 | Chiudi e riapri Veldir dopo Ctrl+C, poi incolla in Esplora | La clipboard Windows dei percorsi rimane valida fino alla sostituzione del contenuto |
+| DND-04 | Trascina da pannello sinistro al destro (cartelle di test) | Richiesta conferma e sola copia, originali intatti |
+| DND-05 | Seleziona più file, trascina uno dei selezionati al pannello opposto | Copia di tutti i file selezionati con conferma |
+| DND-06 | Rilascia un file sul pannello di origine o fuori dai pannelli | Nessuna copia o spostamento |
+| DND-07 | Rilascia su pannello opposto e premi Annulla | Nessuna modifica |
+
 | BATCH-02 | Copia con nome già esistente | Nessuna sovrascrittura; preflight blocca |
 | BATCH-03 | Annulla spostamento confermato | Nessuna modifica |
 | BATCH-04 | Sposta file nello stesso volume | Destinazione aggiornata |

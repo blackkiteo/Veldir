@@ -1,4 +1,4 @@
-# Piano di collaudo Veldir 0.2.1 — Windows 10/11
+# Piano di collaudo Veldir 0.3.0 — Windows 10/11
 
 **Eseguire solo su file di prova, mai su dati importanti.** Il passaggio della CI non sostituisce un collaudo manuale della GUI e delle operazioni.
 
@@ -16,6 +16,12 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 | FILTER-02 | Selezionare file, azzerare filtro con × | Nessuna selezione residua |
 | MODAL-01 | Aprire conferma Cestino, premere Ctrl+W o Ctrl+T | La finestra rimane coerente e nessuna scheda viene chiusa/aperta |
 | PAN-01 | Attiva due pannelli e apri cartelle diverse | Navigazioni indipendenti |
+| UI-01 | Ridimensiona i pannelli trascinando il divisore | Larghezze cambiano senza blocchi o elementi sovrapposti |
+| UI-02 | Chiudi e riapri Veldir dopo aver regolato il divisore | Le proporzioni sono ripristinate |
+| UI-03 | Nascondi la barra laterale e riapri | Stato della barra conservato |
+| UI-04 | Clicca su una cartella nella barra percorso | Navigazione immediata alla cartella scelta |
+| SORT-01 | Clicca Nome, Dimensione e Modificato due volte | Ordinamento crescente/decrescente, cartelle sempre prime |
+| SEL-03 | Dopo aver filtrato, usa Ctrl+A e poi Esc | Selezionati solo file visibili; Esc azzera |
 | PAN-02 | Cambia pannello con clic e F6 | Toolbar applicata al pannello attivo |
 | PAN-03 | Chiudi e riapri l'app in modalità doppia | Percorsi ripristinati |
 | SEL-01 | Ctrl+clic e Maiusc+clic | Selezione multipla corretta |

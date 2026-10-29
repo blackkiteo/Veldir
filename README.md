@@ -1,8 +1,17 @@
-# Veldir v0.2.1 — file manager leggero per Windows
+# Veldir v0.3.0 — file manager leggero per Windows
 
 Prototipo **open source MIT** in Rust + egui, ispirato alla filosofia di File Pilot, con codice e identità indipendenti. **Non affiliato a File Pilot.**
 
-> **Stato reale:** Veldir 0.2.0 ha completato con successo compilazione, test e build release Windows su GitHub Actions il 28 ottobre 2026 ([workflow](https://github.com/blackkiteo/Veldir/actions/runs/40631843489)). La 0.2.1 introduce correzioni al focus e alla selezione; usare solo l'artifact di una build con esito positivo. **Non è ancora stato eseguito un collaudo manuale della GUI Windows. Non usare su file importanti prima di quel collaudo.**
+> **Stato reale:** Veldir 0.2.0 e 0.2.1 hanno superato compilazione, test e build release su GitHub Actions. La versione 0.3.0 introduce un aggiornamento dell'interfaccia; scaricare l'EXE solo da una build 0.3.0 completata con successo. **Non è ancora stato eseguito un collaudo manuale della GUI Windows. Non usare su file importanti prima di quel collaudo.**
+
+## Novità della v0.3.0
+
+- **Pannelli ridimensionabili** trascinando il divisore centrale. La proporzione viene salvata e ripristinata.
+- **Barra laterale richiudibile** per dedicare tutto lo spazio ai file; lo stato resta memorizzato.
+- **Percorso a segmenti:** clicca una delle cartelle nella barra degli indirizzi per raggiungerla; Ctrl+L consente ancora di digitare un percorso completo.
+- **Ordinamento interattivo:** clicca Nome, Dimensione o Modificato per ordinare, clicca di nuovo per invertire (cartelle sempre in alto).
+- **Selezione rapida:** Ctrl+A seleziona gli elementi visibili nel filtro, Esc annulla la selezione.
+- Maggior spazio tra i controlli, colori e indicatori di stato rifiniti.
 
 ## Correzioni v0.2.1
 
@@ -38,26 +47,26 @@ Lo script invoca `cargo fmt --all`, `cargo check --all-targets`, `cargo test --a
 
 ### GitHub Actions
 
-Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Windows Build** viene compilata la versione Windows e, se tutti i controlli passano, viene pubblicato come artefatto `Veldir-v0.2.1-Windows-x64` con l'EXE e il suo SHA-256. La build v0.2.0 è stata verificata nella CI; **il collaudo manuale dell'interfaccia resta necessario**.
+Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Windows Build** viene compilata la versione Windows e, se tutti i controlli passano, viene pubblicato come artefatto `Veldir-v0.3.0-Windows-x64` con l'EXE e il suo SHA-256. La build v0.2.0 è stata verificata nella CI; **il collaudo manuale dell'interfaccia resta necessario**.
 
 ## Scorciatoie
 
 | Comando | Tasti |
 | --- | --- |
 | Nuova scheda / chiudi scheda sinistra | Ctrl+T / Ctrl+W |
-| Selezione aggiuntiva / intervallo | Ctrl+clic / Maiusc+clic |
+| Selezione aggiuntiva / intervallo / tutti i visibili | Ctrl+clic / Maiusc+clic / Ctrl+A |
 | Passa tra i pannelli | F6 (apre il secondo se disattivato) |
 | Modifica percorso / filtro pannello attivo | Ctrl+L / Ctrl+F |
 | Indietro / avanti / cartella superiore | Alt+← / Alt+→ / Alt+↑ |
 | Aggiorna entrambi i pannelli e le schede | F5 |
 | Clipboard interna (copia / taglia / incolla) | Ctrl+C / Ctrl+X / Ctrl+V |
-| Rinomina uno / Cestino multiplo | F2 / Canc |
+| Deseleziona / Rinomina uno / Cestino multiplo | Esc / F2 / Canc |
 | Apri un elemento | Invio / doppio clic |
 
 ## Limitazioni ancora aperte
 
 - **Collaudo GUI non ancora eseguito** su Windows: navigazione, ricerca e integrazione del drop OS devono essere provate manualmente.
-- Il doppio pannello ha **larghezze automatiche**: non è ancora possibile trascinare il divisore per ridimensionarlo.
+- Il divisore è trascinabile, ma non è ancora disponibile una modalità di pannelli a tre colonne.
 - Nessuna drag & drop interno tra i pannelli, nessuna clipboard integrata nella Shell Windows; il drag & drop **in ingresso** è distinto da queste funzioni.
 - La modalità Taglia/Sposta tra volumi differenti **non è supportata** (mostra errore; non cancella la sorgente). Usa Copia e verifica i contenuti prima di spostare gli originali nel Cestino.
 - Operazioni batch **non transazionali**: una modifica concorrente durante un batch può lasciarne completata una parte. L'errore lo segnala esplicitamente.

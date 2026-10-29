@@ -1,8 +1,19 @@
-# Veldir v0.6.0 — file manager leggero per Windows
+# Veldir v0.7.0 — file manager leggero per Windows
 
 Prototipo **open source MIT** in Rust + egui, ispirato alla filosofia di File Pilot, con codice e identità indipendenti. **Non affiliato a File Pilot.**
 
 > **Stato reale:** le versioni fino alla 0.5.0 hanno superato compilazione, test e build release su GitHub Actions. L'utente ha confermato un avvio funzionante della prima versione, ma non è documentato un collaudo completo delle operazioni con file importanti. La 0.6.0 deve superare a sua volta la CI Windows e il collaudo manuale prima di essere considerata pronta. Non usare dati importanti nei test.
+
+## Novità v0.7.0 — Icone native e immagini
+
+- **Icone native Windows Shell:** ogni tipo di file e le cartelle utilizzano le associazioni del sistema. Le icone sono recuperate su thread separati e memorizzate per estensione; se non sono disponibili viene usato il simbolo precedente.
+- **Miniature immagini** nella lista per PNG, JPEG, WebP, GIF e BMP; decodifica soltanto per le righe visibili, con cache di massimo 128 immagini e al massimo sei richieste contemporanee.
+- **Anteprima immagine** nella finestra F3, ridimensionata per rispettare l'area disponibile; mantiene l'anteprima testuale esistente.
+- **Pulsante Miniature ON/OFF** con preferenza salvata tra le sessioni.
+- **Limiti di sicurezza delle anteprime:** file regolari max 32 MiB, immagini max 30 megapixel, elaborazione in background e anteprima max 1200 px per lato. Non sono inclusi RAW, TIFF, PDF o filmati.
+- **Nuovi test** su miniature, proporzioni, limite dimensione e chiave cache per tipo di file.
+
+**Nota:** le icone Shell e il posizionamento delle miniature richiedono verifica GUI su Windows reale. Non è stato creato un visualizzatore PDF, né un sistema completo di gestione metadati.
 
 ## Novità v0.6.0 — Copia verso Windows e trascinamento interno
 
@@ -45,7 +56,7 @@ Prototipo **open source MIT** in Rust + egui, ispirato alla filosofia di File Pi
 
 ## Funzioni ancora mancanti
 
-Icone native Windows e miniature, anteprima PDF/immagini, clipboard Shell bidirezionale completa con taglio/spostamento, drag & drop verso applicazioni esterne, aggiornamento automatico cartelle, menu Shell, indicizzazione persistente, undo/rollback, strumenti archivi ZIP completi, installer e firma digitale. Queste non devono essere considerate implementate.
+Anteprima PDF, thumbnail RAW/TIFF, clipboard Shell completa con taglio/spostamento, drag & drop verso applicazioni esterne, aggiornamento automatico cartelle, menu Shell, indicizzazione persistente, undo/rollback, strumenti ZIP completi, installer e firma digitale. Queste non devono essere considerate implementate.
 
 ## Novità della v0.3.0
 
@@ -90,7 +101,7 @@ Lo script invoca `cargo fmt --all`, `cargo check --all-targets`, `cargo test --a
 
 ### GitHub Actions
 
-Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Windows Build** viene compilata la versione Windows e, se tutti i controlli passano, viene pubblicato come artefatto `Veldir-v0.6.0-Windows-x64` con l'EXE e il suo SHA-256. La build v0.2.0 è stata verificata nella CI; **il collaudo manuale dell'interfaccia resta necessario**.
+Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Windows Build** viene compilata la versione Windows e, se tutti i controlli passano, viene pubblicato come artefatto `Veldir-v0.7.0-Windows-x64` con l'EXE e il suo SHA-256. La build v0.2.0 è stata verificata nella CI; **il collaudo manuale dell'interfaccia resta necessario**.
 
 ## Scorciatoie
 
@@ -113,7 +124,7 @@ Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Wind
 - Nessuna copia di link/junction, nessun rollback delle operazioni già completate e nessuna garanzia di preservare timestamp, ACL o altri metadati.
 - Trasferimenti in modalità Sposta tra dischi diversi non supportati; la copia senza sovrascrittura è invece utilizzabile, seguita da verifica manuale.
 - Clipboard Shell limitata a CF_HDROP con intenzione di copia; nessun drag & drop da Veldir verso applicazioni esterne.
-- Non sono ancora disponibili icone native Shell, thumbnail/PDF, indicizzazione persistente, menu contestuale di Windows, file watcher, installer o firma digitale.
+- Le icone native e le miniature immagini sono state introdotte nella 0.7; restano assenti anteprime PDF, indicizzazione persistente, menu contestuale completo di Windows, file watcher, installer e firma digitale.
 
 
 Consulta `SPECIFICHE.md` e `COLLAUDO_WINDOWS.md`.

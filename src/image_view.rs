@@ -40,8 +40,9 @@ pub fn load(path: &Path, max_side: u32) -> Result<Bitmap, String> {
     let decoded = image::ImageReader::open(path).map_err(|e| e.to_string())?
         .with_guessed_format().map_err(|e| e.to_string())?
         .decode().map_err(|e| e.to_string())?;
-    let scaled = decoded.thumbnail(max_side.clamp(24, 1200), max_side.clamp(24, 1200))
-        .to_rgba8();
+    // image::thumbnail may upscale small sources: keep original size as upper bound.
+    let bounded_side = max_side.clamp(24, 1200).min(width.max(height));
+    let scaled = decoded.thumbnail(bounded_side, bounded_side).to_rgba8();
     let (width, height) = scaled.dimensions();
     Ok(Bitmap {
         width: width as usize,

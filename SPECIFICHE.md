@@ -1,4 +1,4 @@
-# Veldir — specifiche tecniche v0.3.0
+# Veldir — specifiche tecniche v0.5.0
 
 ## Ambito
 Windows 10/11 x64. UI Rust + eframe/egui `=0.37.0` (renderer OpenGL/glow). Prototipo standalone senza Electron, account, telemetria o sincronizzazione in rete integrata. Licenza MIT.
@@ -28,6 +28,11 @@ Windows 10/11 x64. UI Rust + eframe/egui `=0.37.0` (renderer OpenGL/glow). Proto
 
 ## Limiti di sicurezza
 Le operazioni batch non sono transazionali: se la destinazione cambia durante l'esecuzione, alcune copie o spostamenti potrebbero già essere completati. Nessuna sovrascrittura automatica, nessun ripristino universale. Copie senza garanzia di conservare ACL, timestamp o metadati. Il Cestino può essere indisponibile su unità di rete. Non usare su dati importanti prima dei collaudi manuali.
+
+## Aggiornamento 0.5.0
+- Byte counters e annullamento durante copia con buffer di 256 KiB.
+- Stage temporaneo con ripulitura su errore/annullamento, pubblicazione no-replace.
+- Importazione esplicita dei file dalla clipboard CF_HDROP di Windows, senza cancellazione delle sorgenti.
 
 ## Roadmap
 1. **0.2.1:** correzione focus e selezione, verifica CI Windows. Collaudo GUI ancora da eseguire.

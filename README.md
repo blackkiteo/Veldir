@@ -1,8 +1,23 @@
-# Veldir v0.5.0 — file manager leggero per Windows
+# Veldir v0.6.0 — file manager leggero per Windows
 
 Prototipo **open source MIT** in Rust + egui, ispirato alla filosofia di File Pilot, con codice e identità indipendenti. **Non affiliato a File Pilot.**
 
-> **Stato reale:** Veldir 0.2.0 e 0.2.1 hanno superato compilazione, test e build release su GitHub Actions. La versione 0.3.0 introduce un aggiornamento dell'interfaccia; scaricare l'EXE solo da una build 0.3.0 completata con successo. **Non è ancora stato eseguito un collaudo manuale della GUI Windows. Non usare su file importanti prima di quel collaudo.**
+> **Stato reale:** le versioni fino alla 0.5.0 hanno superato compilazione, test e build release su GitHub Actions. L'utente ha confermato un avvio funzionante della prima versione, ma non è documentato un collaudo completo delle operazioni con file importanti. La 0.6.0 deve superare a sua volta la CI Windows e il collaudo manuale prima di essere considerata pronta. Non usare dati importanti nei test.
+
+## Novità v0.6.0 — Copia verso Windows e trascinamento interno
+
+- **Copia Veldir → Esplora file:** Ctrl+C prepara i percorsi dei file nella clipboard interna e in quella di Windows (CF_HDROP), così Esplora file può incollarli. Il pulsante «Verso Esplora» esporta la selezione senza cambiare la clipboard interna.
+- **Copia Esplora file → Veldir:** resta disponibile il pulsante «Da Esplora» o Ctrl+Maiusc+V, con conferma di destinazione.
+- **Trascina tra pannelli:** trascina la riga di un file o una selezione multipla verso il pannello opposto. Il rilascio chiede conferma e **copia**, non sposta. Trascinare in altri punti non modifica file.
+- **Taglia Ctrl+X resta interno a Veldir:** nessun effetto di spostamento viene pubblicato nella clipboard di Windows.
+- **Sicurezza:** la clipboard viene aggiornata solo su richiesta esplicita; le sorgenti non vengono modificate dalla mera esportazione.
+
+### Limitazioni della clipboard e del trascinamento
+
+- CF_HDROP è per file realmente presenti sul filesystem: file virtuali in app come Outlook non sono gestiti. Limite 500 elementi esportati.
+- Il trascinamento interno vale solo **tra due pannelli Veldir**, non verso Esplora file o altre finestre. Per trasferire verso Esplora utilizzare Ctrl+C e poi Incolla lì.
+- L'esportazione pubblica l'intenzione di **copia**, non di taglio. Incollare con Ctrl+V *dentro Veldir* usa la clipboard interna; per importare quella Windows usare Ctrl+Maiusc+V.
+- Nessun rollback automatico dei batch; link/junction e preservazione completa ACL/metadati non sono ancora supportati.
 
 ## Novità v0.5.0 — Trasferimenti più sicuri e clipboard Esplora
 
@@ -30,7 +45,7 @@ Prototipo **open source MIT** in Rust + egui, ispirato alla filosofia di File Pi
 
 ## Funzioni ancora mancanti
 
-Icone native Windows e miniature, anteprima PDF/immagini, compatibilità clipboard file della Shell, drag & drop interno, progressi in byte, aggiornamento automatico cartelle, integrazione menu Shell, indicizzazione persistente, undo/rollback, strumenti archivi ZIP completi, installer e firma digitale. Queste non devono essere considerate implementate.
+Icone native Windows e miniature, anteprima PDF/immagini, clipboard Shell bidirezionale completa con taglio/spostamento, drag & drop verso applicazioni esterne, aggiornamento automatico cartelle, menu Shell, indicizzazione persistente, undo/rollback, strumenti archivi ZIP completi, installer e firma digitale. Queste non devono essere considerate implementate.
 
 ## Novità della v0.3.0
 
@@ -75,7 +90,7 @@ Lo script invoca `cargo fmt --all`, `cargo check --all-targets`, `cargo test --a
 
 ### GitHub Actions
 
-Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Windows Build** viene compilata la versione Windows e, se tutti i controlli passano, viene pubblicato come artefatto `Veldir-v0.5.0-Windows-x64` con l'EXE e il suo SHA-256. La build v0.2.0 è stata verificata nella CI; **il collaudo manuale dell'interfaccia resta necessario**.
+Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Windows Build** viene compilata la versione Windows e, se tutti i controlli passano, viene pubblicato come artefatto `Veldir-v0.6.0-Windows-x64` con l'EXE e il suo SHA-256. La build v0.2.0 è stata verificata nella CI; **il collaudo manuale dell'interfaccia resta necessario**.
 
 ## Scorciatoie
 
@@ -87,18 +102,18 @@ Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Wind
 | Modifica percorso / filtro pannello attivo | Ctrl+L / Ctrl+F |
 | Indietro / avanti / cartella superiore | Alt+← / Alt+→ / Alt+↑ |
 | Aggiorna entrambi i pannelli e le schede | F5 |
-| Clipboard interna (copia / taglia / incolla) | Ctrl+C / Ctrl+X / Ctrl+V |
+| Copia anche in Esplora / taglia interno / incolla interno | Ctrl+C / Ctrl+X / Ctrl+V |
+| Importa da clipboard Esplora con conferma | Ctrl+Maiusc+V |
 | Deseleziona / Rinomina uno / Cestino multiplo | Esc / F2 / Canc |
 | Apri un elemento | Invio / doppio clic |
 
 ## Limitazioni ancora aperte
 
-- **Collaudo GUI non ancora eseguito** su Windows: navigazione, ricerca e integrazione del drop OS devono essere provate manualmente.
-- Il divisore è trascinabile, ma non è ancora disponibile una modalità di pannelli a tre colonne.
-- Nessuna drag & drop interno tra i pannelli, nessuna clipboard integrata nella Shell Windows; il drag & drop **in ingresso** è distinto da queste funzioni.
-- La modalità Taglia/Sposta tra volumi differenti **non è supportata** (mostra errore; non cancella la sorgente). Usa Copia e verifica i contenuti prima di spostare gli originali nel Cestino.
-- Operazioni batch **non transazionali**: una modifica concorrente durante un batch può lasciarne completata una parte. L'errore lo segnala esplicitamente.
-- Nessuna progress bar o annullamento, anteprima, indicizzazione ricorsiva, menu contestuale Shell, undo, copia di link, ripresa copie, sincronizzazione con modifiche esterne.
-- La copia preserva i contenuti, ma non garantisce conservazione di permessi ACL, metadati e timestamp. Evita al momento directory di sistema, file in uso o dati sensibili.
+- **Non è una release stabile:** mancano il collaudo completo della GUI e test su PC diversi.
+- Nessuna copia di link/junction, nessun rollback delle operazioni già completate e nessuna garanzia di preservare timestamp, ACL o altri metadati.
+- Trasferimenti in modalità Sposta tra dischi diversi non supportati; la copia senza sovrascrittura è invece utilizzabile, seguita da verifica manuale.
+- Clipboard Shell limitata a CF_HDROP con intenzione di copia; nessun drag & drop da Veldir verso applicazioni esterne.
+- Non sono ancora disponibili icone native Shell, thumbnail/PDF, indicizzazione persistente, menu contestuale di Windows, file watcher, installer o firma digitale.
+
 
 Consulta `SPECIFICHE.md` e `COLLAUDO_WINDOWS.md`.

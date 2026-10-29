@@ -1,4 +1,4 @@
-# Veldir — specifiche tecniche v0.5.0
+# Veldir — specifiche tecniche v0.6.0
 
 ## Ambito
 Windows 10/11 x64. UI Rust + eframe/egui `=0.37.0` (renderer OpenGL/glow). Prototipo standalone senza Electron, account, telemetria o sincronizzazione in rete integrata. Licenza MIT.
@@ -33,6 +33,12 @@ Le operazioni batch non sono transazionali: se la destinazione cambia durante l'
 - Byte counters e annullamento durante copia con buffer di 256 KiB.
 - Stage temporaneo con ripulitura su errore/annullamento, pubblicazione no-replace.
 - Importazione esplicita dei file dalla clipboard CF_HDROP di Windows, senza cancellazione delle sorgenti.
+
+## Aggiornamento 0.6.0
+- Esportazione clipboard Windows con CF_HDROP e memoria globale trasferita alla Shell. Le copie pubblicate non implicano MOVE.
+- Importazione dalla clipboard Windows ancora disponibile con dialogo di conferma.
+- Drag & drop solo tra pannelli egui di Veldir, con conferma di copia e nessuno spostamento automatico.
+- La clipboard interna supporta Taglia solo dentro Veldir. Compatibilità bidirezionale *completa* Shell non ancora disponibile.
 
 ## Roadmap
 1. **0.2.1:** correzione focus e selezione, verifica CI Windows. Collaudo GUI ancora da eseguire.

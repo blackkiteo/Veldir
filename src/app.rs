@@ -125,6 +125,17 @@ fn configured_header_ui(
                 egui::FontId::proportional(11.0),
                 ui.visuals().text_color(),
             );
+        response.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                if key.is_some() {
+                    egui::Role::Button
+                } else {
+                    egui::Role::ColumnHeader
+                },
+                true,
+                &caption,
+            )
+        });
         if response
             .on_hover_text(format!("Ordina per {}", label.to_lowercase()))
             .clicked()
@@ -420,19 +431,40 @@ pub struct Veldir {
     about_visible: bool,
     history_visible: bool,
     job_history: VecDeque<String>,
+    job_sources: Vec<PathBuf>,
     preview_zoom: f32,
     search_filter: String,
     search_descending: bool,
     reveal_path: Option<PathBuf>,
 }
 
+fn load_saved(storage: Option<&dyn eframe::Storage>) -> (Saved, &'static str) {
+    let Some(storage) = storage else {
+        return (Saved::default(), "");
+    };
+    if let Some(saved) = eframe::get_value(storage, "veldir_state") {
+        return (saved, "");
+    }
+    if let Some(saved) = eframe::get_value(storage, "veldir_state_backup") {
+        return (saved, "Impostazioni recuperate dalla copia precedente");
+    }
+    (
+        Saved::default(),
+        if storage.get_string("veldir_state").is_some() {
+            "Impostazioni non valide: ripristinati i valori predefiniti"
+        } else {
+            ""
+        },
+    )
+}
+
 impl Veldir {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let saved: Saved = cc
-            .storage
-            .and_then(|s| eframe::get_value(s, "veldir_state"))
-            .unwrap_or_default();
+        let (saved, note) = load_saved(cc.storage);
         let mut app = Self::from_saved(cc.egui_ctx.clone(), saved);
+        if !note.is_empty() {
+            app.status = note.into();
+        }
         let args: Vec<_> = std::env::args_os().collect();
         if let Some(index) = args.iter().position(|a| a == "--path") {
             if let Some(p) = args.get(index + 1) {
@@ -547,6 +579,7 @@ impl Veldir {
             about_visible: false,
             history_visible: false,
             job_history: VecDeque::new(),
+            job_sources: Vec::new(),
             preview_zoom: 1.0,
             search_filter: String::new(),
             search_descending: false,
@@ -1100,6 +1133,18 @@ impl Veldir {
                 return;
             }
             other => other,
+        };
+        self.job_sources = match &job {
+            Job::Transfer { sources, .. }
+            | Job::CopyMany { sources, .. }
+            | Job::MoveMany { sources, .. }
+            | Job::TrashMany { sources } => sources.clone(),
+            Job::Copy { source, .. }
+            | Job::Move { source, .. }
+            | Job::Trash { source }
+            | Job::Rename { source, .. } => vec![source.clone()],
+            Job::RenameMany { changes } => changes.iter().map(|(p, _)| p.clone()).collect(),
+            _ => Vec::new(),
         };
         self.busy = true;
         self.job_progress = None;
@@ -2393,7 +2438,14 @@ impl Veldir {
             return;
         }
         if let Some(e) = tab.error.clone() {
-            ui.colored_label(Color32::LIGHT_RED, e);
+            ui.colored_label(
+                if ui.visuals().dark_mode {
+                    Color32::LIGHT_RED
+                } else {
+                    Color32::from_rgb(170, 25, 25)
+                },
+                e,
+            );
             if ui.button("Riprova ad aprire la cartella").clicked() {
                 self.focus(right);
                 self.reload_current();
@@ -2549,12 +2601,15 @@ impl Veldir {
                     );
                 }
                 if tab.cursor.as_ref() == Some(&item.path) {
-                    ui.painter()
-                        .hline(rect.x_range(), rect.top(), egui::Stroke::new(1.0, ACCENT));
+                    ui.painter().hline(
+                        rect.x_range(),
+                        rect.top(),
+                        egui::Stroke::new(1.0, accent_color(ui)),
+                    );
                     ui.painter().hline(
                         rect.x_range(),
                         rect.bottom(),
-                        egui::Stroke::new(1.0, ACCENT),
+                        egui::Stroke::new(1.0, accent_color(ui)),
                     );
                 }
                 response.widget_info(|| {
@@ -2564,6 +2619,16 @@ impl Veldir {
                 response.context_menu(|ui| {
                     ui.label(RichText::new(&item.name).strong());
                     ui.separator();
+                    if item.is_dir {
+                        if ui.button("Apri in nuova scheda").clicked() {
+                            menu_action = Some(("tab", item.path.clone()));
+                            ui.close();
+                        }
+                        if ui.button("Apri nel pannello opposto").clicked() {
+                            menu_action = Some(("other", item.path.clone()));
+                            ui.close();
+                        }
+                    }
                     for (label, action) in [
                         ("Apri", "open"),
                         ("Copia", "copy"),
@@ -2639,6 +2704,15 @@ impl Veldir {
             tab.selected.insert(path.clone());
             tab.anchor = Some(path.clone());
             match action {
+                "tab" => self.add_tab(path),
+                "other" => {
+                    if self.secondary.is_none() {
+                        self.open_secondary(path);
+                    } else {
+                        self.focus(!right);
+                        self.navigate(path);
+                    }
+                }
                 "open" => self.open_entry(path),
                 "copy" => self.clipboard_set(false),
                 "cut" => self.clipboard_set(true),
@@ -3067,7 +3141,14 @@ impl Veldir {
                                     });
                             }
                             Err(err) => {
-                                ui.colored_label(Color32::LIGHT_RED, err);
+                                ui.colored_label(
+                                    if ui.visuals().dark_mode {
+                                        Color32::LIGHT_RED
+                                    } else {
+                                        Color32::from_rgb(170, 25, 25)
+                                    },
+                                    err,
+                                );
                             }
                         }
                         ui.horizontal(|ui| {
@@ -3330,8 +3411,10 @@ impl Veldir {
                     } else {
                         format!("{} / {} elementi", p.done_items, p.total_items)
                     };
-                    ui.add(egui::ProgressBar::new(ratio.clamp(0.0,1.0))
-                        .desired_width(160.0).text(caption));
+                    let current=self.job_sources.get(p.done_items.min(self.job_sources.len().saturating_sub(1)));
+                    let caption=if let Some(path)=current{format!("{} · {caption}",path.file_name().unwrap_or_default().to_string_lossy().chars().take(22).collect::<String>())}else{caption};
+                    let progress=ui.add(egui::ProgressBar::new(ratio.clamp(0.0,1.0)).desired_width(200.0).text(caption));
+                    if let Some(path)=current{progress.on_hover_text(display_path(path));}
                     if let Some(started)=self.job_started_at {
                         let elapsed=started.elapsed().as_secs_f64();
                         if p.done_bytes > 0 && elapsed >= 0.2 {
@@ -3378,6 +3461,11 @@ impl eframe::App for Veldir {
             columns: self.columns.clone(),
             restore_session: self.restore_session,
         };
+        if eframe::get_value::<Saved>(storage, "veldir_state").is_some() {
+            if let Some(previous) = storage.get_string("veldir_state") {
+                storage.set_string("veldir_state_backup", previous);
+            }
+        }
         eframe::set_value(storage, "veldir_state", &saved);
     }
 }
@@ -3458,6 +3546,62 @@ mod tests {
         }
         fn flush(&mut self) {}
     }
+
+    #[test]
+    fn secondary_text_and_accent_meet_contrast_in_both_themes() {
+        fn luminance(c: egui::Color32) -> f32 {
+            let channel = |v: u8| {
+                let s = v as f32 / 255.0;
+                if s <= 0.04045 {
+                    s / 12.92
+                } else {
+                    ((s + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+        }
+        fn contrast(a: egui::Color32, b: egui::Color32) -> f32 {
+            let a = luminance(a);
+            let b = luminance(b);
+            (a.max(b) + 0.05) / (a.min(b) + 0.05)
+        }
+        for dark in [true, false] {
+            let ctx = egui::Context::default();
+            apply_theme(&ctx, dark);
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                assert!(contrast(super::muted_color(ui), ui.visuals().panel_fill) >= 4.5);
+                assert!(contrast(super::accent_color(ui), ui.visuals().panel_fill) >= 4.5);
+            });
+            output.drop_without_applying_deltas();
+        }
+    }
+
+    #[test]
+    fn corrupted_settings_recover_last_valid_backup() {
+        let mut store = MemoryStore::default();
+        eframe::set_value(
+            &mut store,
+            "veldir_state_backup",
+            &Saved {
+                dark_theme: false,
+                ..Default::default()
+            },
+        );
+        eframe::Storage::set_string(&mut store, "veldir_state", "not valid RON".into());
+        let (saved, note) = super::load_saved(Some(&store));
+        assert!(!saved.dark_theme);
+        assert!(note.contains("copia precedente"));
+    }
+    #[test]
+    fn corrupt_settings_without_backup_use_defaults_with_notice() {
+        let mut store = MemoryStore::default();
+        eframe::Storage::set_string(&mut store, "veldir_state", "not valid RON".into());
+        let (saved, note) = super::load_saved(Some(&store));
+        assert!(saved.dark_theme);
+        assert!(saved.restore_session);
+        assert!(!note.is_empty());
+    }
+
     #[test]
     fn saved_columns_and_session_options_roundtrip() {
         let d = tempfile::tempdir().unwrap();

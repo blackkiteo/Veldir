@@ -20,3 +20,6 @@ Il tentativo precedente di cattura GUI Windows è terminato in timeout. Nessun r
 
 ## Misura locale del backend di elenco
 Windows, Rust 1.95 GNU, cartelle temporanee appena create, file piccoli, tre letture consecutive: 1.000 file [2,2,2] ms; 10.000 file [20,20,20] ms. Esclude creazione, UI, icone, miniature e rete. Non è un benchmark del tempo totale di apertura GUI.
+
+## Completamenti di consolidamento
+Recupero impostazioni da backup valido e avviso sui valori predefiniti, indicazione del file corrente, azioni contestuali sulle cartelle, contrasto secondario e accento verificati nei due temi. L’albero accessibile Windows della build locale espone pulsanti, campi e righe; cattura e geometria per i clic restano indisponibili (timeout anche dopo recupero). Non è una validazione di screen reader o interazioni GUI.

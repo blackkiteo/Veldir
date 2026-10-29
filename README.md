@@ -173,3 +173,8 @@ Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Wind
 
 
 Consulta `SPECIFICHE.md` e `COLLAUDO_WINDOWS.md`.
+
+## Recupero impostazioni e integrazione Windows
+Le preferenze valide precedenti sono mantenute in una chiave di backup. Se le preferenze correnti non sono valide viene tentato il recupero e mostrato un avviso. Il menu contestuale delle cartelle offre apertura in una nuova scheda o nel pannello opposto. Il file corrente compare nell’avanzamento.
+
+Per la modalità portabile si può avviare Veldir-portable.cmd nello ZIP. Le decisioni su PDF, Shell e firma sono in ARCHITECTURE_DECISIONS.md. Lo script di firma richiede certificato e servizio timestamp del proprietario e non è stato eseguito.

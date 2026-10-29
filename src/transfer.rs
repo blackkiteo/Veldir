@@ -87,7 +87,7 @@ pub fn execute(
                 .map_err(|e| e.to_string())?;
             let progress = |p: Progress| {
                 notify(Progress {
-                    done_items: done,
+                    done_items: done + skipped + errors.len(),
                     total_items: total,
                     done_bytes: completed_bytes.saturating_add(p.done_bytes),
                     total_bytes,
@@ -132,7 +132,7 @@ pub fn execute(
             }
         }
         notify(Progress {
-            done_items: done,
+            done_items: done + skipped + errors.len(),
             total_items: total,
             done_bytes: completed_bytes,
             total_bytes,

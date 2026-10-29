@@ -39,6 +39,8 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item README.md target/release/README.md
+          Copy-Item scripts/Veldir-portable.cmd target/release/Veldir-portable.cmd
+          Copy-Item ROADMAP.md target/release/ROADMAP.md
           Copy-Item RELEASE_CHECKLIST.md target/release/RELEASE_CHECKLIST.md
           "Commit: $env:VELDIR_BUILD_COMMIT" | Set-Content target/release/BUILD.txt
           Get-FileHash target/release/veldir.exe -Algorithm SHA256 | ForEach-Object {
@@ -49,9 +51,11 @@ jobs:
           name: Veldir-Windows-x64-${{ github.sha }}
           path: |
             target/release/veldir.exe
+            target/release/Veldir-portable.cmd
             target/release/SHA256SUMS.txt
             target/release/BUILD.txt
             target/release/README.md
+            target/release/ROADMAP.md
             target/release/RELEASE_CHECKLIST.md
           if-no-files-found: error
           retention-days: 30

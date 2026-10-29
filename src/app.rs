@@ -947,9 +947,13 @@ impl Veldir {
                 self.search_results.clear();
             }
             if ui.button(if self.preview_visible { "▤ Chiudi anteprima" } else { "▤ Anteprima" })
-                .on_hover_text("Anteprima testuale e dettagli · F3").clicked() {
+                .on_hover_text("Anteprima immagini, testo e dettagli · F3").clicked() {
                 self.preview_visible = !self.preview_visible;
                 self.preview_request = None;
+            }
+            if ui.button(if self.thumbs_visible { "▦ Miniature ON" } else { "▦ Miniature OFF" })
+                .on_hover_text("Mostra miniature delle immagini negli elenchi").clicked() {
+                self.thumbs_visible = !self.thumbs_visible;
             }
             if ui.button(if self.dark_theme { "☼ Tema chiaro" } else { "☾ Tema scuro" })
                 .on_hover_text("Cambia il tema di Veldir").clicked() {
@@ -1048,6 +1052,8 @@ impl Veldir {
         let mut drag_start: Option<PathBuf> = None;
         let mut menu_action: Option<(&'static str,PathBuf)> = None;
         let mut requested_sort = None;
+        let mut thumbnails_needed = Vec::new();
+        let mut icons_needed = Vec::new();
         let tab = self.panel(right);
         let filter = tab.filter.to_lowercase();
         let indices: Vec<usize> = tab.entries.iter().enumerate()
@@ -1088,7 +1094,7 @@ impl Veldir {
         if count == 0 { ui.add_space(18.0); ui.label("Nessun elemento trovato"); return; }
         egui::ScrollArea::vertical().auto_shrink([false, false])
             .id_salt(("rows", tab.id, tab.generation))
-            .show_rows(ui, 28.0, count, |ui, range| {
+            .show_rows(ui, 37.0, count, |ui, range| {
                 for row in range {
                     let item = &tab.entries[indices[row]];
                     let selected = tab.selected.contains(&item.path);
@@ -1101,7 +1107,25 @@ impl Veldir {
                         "zip" | "7z" | "rar" => "▦",
                         "exe" | "msi" => "◈", _ => "▫",
                     }};
-                    let name = format!("{symbol}   {}",item.name);
+                    let name = item.name.clone();
+                    let key = native_icons::key(&item.name,item.is_dir);
+                    if !self.icon_cache.contains_key(&key)
+                        && !self.icon_pending.contains(&key)
+                        && !self.icon_failed.contains(&key) {
+                        icons_needed.push(key.clone());
+                    }
+                    if self.thumbs_visible && image_view::supported(&item.path)
+                        && !self.thumb_cache.contains_key(&item.path)
+                        && !self.thumb_pending.contains(&item.path)
+                        && !self.thumb_failed.contains(&item.path) {
+                        thumbnails_needed.push(item.path.clone());
+                    }
+                    let icon = if self.thumbs_visible {
+                        self.thumb_cache.get(&item.path)
+                            .or_else(|| self.icon_cache.get(&key))
+                    } else {
+                        self.icon_cache.get(&key)
+                    };
                     let file_type = if item.is_dir { "Cartella".to_owned() }
                         else { item.path.extension().and_then(|e| e.to_str())
                             .map(str::to_ascii_uppercase).unwrap_or_else(|| "File".into()) };
@@ -1111,9 +1135,17 @@ impl Veldir {
                         d.format("%d/%m/%Y %H:%M").to_string()
                     }).unwrap_or_else(|| "—".into());
                     let response = ui.horizontal(|ui| {
-                        let r = ui.add_sized([w_name, 25.0], egui::Button::new(name)
-                            .sense(egui::Sense::click_and_drag())
-                            .selected(selected).frame(selected));
+                        if let Some(tex)=icon {
+                            ui.add_sized([32.0,32.0],egui::Image::new(tex)
+                                .fit_to_exact_size(egui::vec2(28.0,28.0)));
+                        } else {
+                            ui.add_sized([32.0,32.0],egui::Label::new(
+                                RichText::new(symbol).color(ACCENT)));
+                        }
+                        let r = ui.add_sized([(w_name-35.0).max(75.0), 32.0],
+                            egui::Button::new(name)
+                                .sense(egui::Sense::click_and_drag())
+                                .selected(selected).frame(selected));
                         if !dual { ui.add_sized([w_type, 25.0], egui::Label::new(file_type)); }
                         ui.add_sized([w_size, 25.0], egui::Label::new(size));
                         if !dual { ui.label(RichText::new(modified).color(TEXT_MUTED).small()); }
@@ -1141,6 +1173,7 @@ impl Veldir {
                     if response.double_clicked() { open = Some(item.path.clone()); }
                 }
             });
+        self.schedule_assets(thumbnails_needed,icons_needed);
         if let Some((path, modifiers)) = click {
             // Selection is resolved against visible, filtered order.
             let ordered: Vec<PathBuf> = indices.iter()
@@ -1394,7 +1427,7 @@ impl eframe::App for Veldir {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("◈ VELDIR").strong().size(18.0).color(ACCENT));
-            ui.label(RichText::new("0.6.0   •   FILE MANAGER FOR WINDOWS").small().color(TEXT_MUTED));
+            ui.label(RichText::new("0.7.0   •   FILE MANAGER FOR WINDOWS").small().color(TEXT_MUTED));
         });
         ui.add_space(8.0);
         self.tabs_ui(ui);

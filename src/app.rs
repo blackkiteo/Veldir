@@ -365,6 +365,81 @@ enum Dialog {
 struct InternalClipboard {
     sources: Vec<PathBuf>,
     cut: bool,
+    /// True only if the same file list was published to the Windows clipboard.
+    exported_to_windows: bool,
+}
+
+/// egui-winit 0.37 turns Ctrl+C/X into Copy/Cut and Ctrl+V into Paste(text).
+/// When the clipboard contains only CF_HDROP files, the V key-down is swallowed
+/// *without* a Paste event: only the V key-up reaches egui. Track both paths so
+/// normal text fields can keep egui's native clipboard support enabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileClipboardShortcut {
+    Copy,
+    Cut,
+    Paste,
+    Import,
+}
+
+#[derive(Default)]
+struct FileClipboardKeys {
+    v_down: bool,
+    v_paste_seen: bool,
+}
+
+impl FileClipboardKeys {
+    fn read(&mut self, events: &[egui::Event], shift: bool) -> Option<FileClipboardShortcut> {
+        use FileClipboardShortcut as Action;
+        let mut action = None;
+        for event in events {
+            match event {
+                egui::Event::Copy => action = Some(Action::Copy),
+                egui::Event::Cut => action = Some(Action::Cut),
+                egui::Event::Paste(_) => {
+                    self.v_paste_seen = true;
+                    action = Some(if shift { Action::Import } else { Action::Paste });
+                }
+                egui::Event::Key {
+                    key: egui::Key::C,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.command => action = Some(Action::Copy),
+                egui::Event::Key {
+                    key: egui::Key::X,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.command => action = Some(Action::Cut),
+                egui::Event::Key {
+                    key: egui::Key::V,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => {
+                    self.v_down = true;
+                    self.v_paste_seen = modifiers.command;
+                    if modifiers.command {
+                        action = Some(if modifiers.shift { Action::Import } else { Action::Paste });
+                    }
+                }
+                egui::Event::Key {
+                    key: egui::Key::V,
+                    pressed: false,
+                    ..
+                } => {
+                    if !self.v_down && !self.v_paste_seen && action.is_none() {
+                        // The integration swallowed Ctrl+V because CF_HDROP has no text.
+                        action = Some(if shift { Action::Import } else { Action::Paste });
+                    }
+                    self.v_down = false;
+                    self.v_paste_seen = false;
+                }
+                _ => {}
+            }
+        }
+        action
+    }
 }
 
 struct DragIntent {
@@ -385,6 +460,7 @@ pub struct Veldir {
     shortcuts: Vec<(String, PathBuf)>,
     drives: Vec<PathBuf>,
     clipboard: Option<InternalClipboard>,
+    clipboard_keys: FileClipboardKeys,
     drag_intent: Option<DragIntent>,
     busy: bool,
     dialog: Dialog,
@@ -534,6 +610,7 @@ impl Veldir {
             shortcuts,
             drives,
             clipboard: None,
+            clipboard_keys: FileClipboardKeys::default(),
             drag_intent: None,
             busy: false,
             dialog: Dialog::None,
@@ -1541,6 +1618,7 @@ impl Veldir {
         self.clipboard = Some(InternalClipboard {
             sources: sources.clone(),
             cut,
+            exported_to_windows: false,
         });
         if cut {
             // Cut stays local until a confirmed move. Never publish a MOVE intent to Explorer.
@@ -1548,10 +1626,13 @@ impl Veldir {
         } else {
             match crate::shell_clipboard::copy_files_to_explorer(&sources) {
                 Ok(()) => {
+                    if let Some(clip) = self.clipboard.as_mut() {
+                        clip.exported_to_windows = true;
+                    }
                     self.status = format!(
                         "{} elementi copiati: clipboard Veldir e Windows",
                         sources.len()
-                    )
+                    );
                 }
                 Err(error) => {
                     self.status =
@@ -1587,6 +1668,47 @@ impl Veldir {
             }
             Err(error) => {
                 self.status = format!("Clipboard Windows: {error}");
+            }
+        }
+    }
+
+    fn paste_from_keyboard(&mut self) {
+        if self.busy || !matches!(self.dialog, Dialog::None) {
+            return;
+        }
+        // Ctrl+V uses the current Windows file clipboard. This also makes files
+        // copied in Explorer work without the old Ctrl+Shift+V requirement.
+        // A local Cut remains internal, because it never exports a MOVE intent.
+        if self.clipboard.as_ref().is_some_and(|clip| clip.cut) {
+            self.paste();
+            return;
+        }
+        match crate::shell_clipboard::files_from_explorer() {
+            Ok(paths) => {
+                let same_as_local = self.clipboard.as_ref().is_some_and(|clip| {
+                    clip.sources.len() == paths.len()
+                        && paths.iter().all(|path| clip.sources.contains(path))
+                });
+                if same_as_local {
+                    self.paste();
+                } else {
+                    self.dialog = Dialog::ExternalDrop {
+                        sources: paths,
+                        destination: self.current().path.clone(),
+                    };
+                }
+            }
+            Err(error) => {
+                if self
+                    .clipboard
+                    .as_ref()
+                    .is_some_and(|clip| !clip.exported_to_windows)
+                {
+                    // Windows clipboard export can fail; preserve local copy.
+                    self.paste();
+                } else {
+                    self.status = format!("Nessun file nella clipboard Windows: {error}");
+                }
             }
         }
     }
@@ -1758,6 +1880,9 @@ impl Veldir {
     }
 
     fn keyboard(&mut self, ctx: &egui::Context) {
+        // Read both clipboard events and ordinary key events *before* deciding
+        // whether a text field, modal, or file list owns the keyboard.
+        let file_clipboard = ctx.input(|i| self.clipboard_keys.read(&i.events, i.modifiers.shift));
         // Dialogs are modal: navigation and file shortcuts must not change their context.
         if !matches!(self.dialog, Dialog::None) {
             return;
@@ -1835,18 +1960,12 @@ impl Veldir {
             if ctx.input(|i| i.key_pressed(egui::Key::Backspace)) {
                 self.up();
             }
-            if shortcut(egui::Key::C) {
-                self.clipboard_set(false);
-            }
-            if shortcut(egui::Key::X) {
-                self.clipboard_set(true);
-            }
-            if ctx
-                .input(|i| i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::V))
-            {
-                self.import_explorer_clipboard();
-            } else if shortcut(egui::Key::V) {
-                self.paste();
+            match file_clipboard {
+                Some(FileClipboardShortcut::Copy) => self.clipboard_set(false),
+                Some(FileClipboardShortcut::Cut) => self.clipboard_set(true),
+                Some(FileClipboardShortcut::Paste) => self.paste_from_keyboard(),
+                Some(FileClipboardShortcut::Import) => self.import_explorer_clipboard(),
+                None => {}
             }
             if shortcut(egui::Key::A) {
                 self.select_all_visible();

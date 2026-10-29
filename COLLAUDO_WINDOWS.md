@@ -94,3 +94,11 @@ Le copie batch possono fermarsi dopo alcuni elementi già completati, non esiste
 - [ ] Icone Shell nitide e trasparenti; miniature con proporzioni corrette, fallback senza simboli mancanti.
 - [ ] Doppio clic, selezione Ctrl/Maiusc, menu contestuale e trascinamento fra pannelli dopo il nuovo hit target di riga.
 La CI verifica compilazione e test; queste verifiche visive e di interazione richiedono una sessione Windows reale.
+
+
+## Verifiche aggiunte per i due pannelli
+- Rendering automatico dell'interfaccia completa a 900/1230/1920 punti, tema chiaro e scuro, divisore 25/50/75%: nessuna sovrapposizione o crescita oltre il viewport.
+- Input sintetico F6 e Ctrl+A: cambio pannello e selezione dei soli file filtrati nel pannello attivo.
+- Correzione: rettangoli dei pannelli riservati prima del rendering, clipping separato e campo filtro adattivo.
+- Tentativo GUI sul computer locale: la finestra viene individuata, ma la cattura restituisce "FrameArrived timed out" e, dopo recupero, "window capture timed out". Nessuna interazione GUI certificata da questo tentativo.
+- Da completare manualmente: trascinamento del divisore, clic sulle righe, Ctrl/Maiusc, menu contestuale, doppio clic, trascinamento fra pannelli e DPI 125/150/200%.

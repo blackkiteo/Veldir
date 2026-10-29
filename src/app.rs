@@ -262,9 +262,13 @@ impl Veldir {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let saved: Saved = cc.storage.and_then(|s| eframe::get_value(s, "veldir_state"))
             .unwrap_or_default();
+        Self::from_saved(cc.egui_ctx.clone(), saved)
+    }
+
+    fn from_saved(context: egui::Context, saved: Saved) -> Self {
         let (tx, rx) = mpsc::channel();
         let watch_tx=tx.clone();
-        let watch_ctx=cc.egui_ctx.clone();
+        let watch_ctx=context.clone();
         let watcher=folder_watch::FolderWatcher::start(move |path| {
             let _=watch_tx.send(Message::WatchedPath(path));
             watch_ctx.request_repaint();
@@ -288,7 +292,7 @@ impl Veldir {
 
         let mut app = Self {
             tabs: Vec::new(), active: 0, secondary: None, focused_right: false,
-            next_id: 1, tx, rx, context: cc.egui_ctx.clone(),
+            next_id: 1, tx, rx, context: context.clone(),
             favorites: saved.favorites, shortcuts, drives,
             clipboard: None, drag_intent: None,
             busy: false, dialog: Dialog::None,
@@ -311,7 +315,7 @@ impl Veldir {
             watcher,watched_paths:Vec::new(),watch_dirty:HashMap::new(),
             live_refresh:saved.live_refresh,
         };
-        apply_theme(&cc.egui_ctx, app.dark_theme);
+        apply_theme(&context, app.dark_theme);
         let restored: Vec<PathBuf> = saved.tabs.into_iter().filter(|p| p.is_dir()).take(12).collect();
         if restored.is_empty() {
             app.add_tab(home);
@@ -1446,6 +1450,20 @@ impl Veldir {
         self.status="Trascinamento annullato (nessuna modifica)".into();
     }
 
+
+    /// Reserve the pane in the parent before rendering its child. Widgets in
+    /// one pane cannot grow the other pane or paint beyond the divider.
+    fn allocate_pane(&mut self, ui: &mut egui::Ui, width: f32, height: f32, right: bool) -> egui::Rect {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+        let mut child = ui.new_child(egui::UiBuilder::new()
+            .id_salt(("file_pane", right))
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)));
+        child.set_clip_rect(rect.intersect(ui.clip_rect()));
+        self.pane_ui(&mut child, right);
+        rect
+    }
+
     fn pane_ui(&mut self, ui: &mut egui::Ui, right: bool) {
         let tab = self.panel(right);
         let path = tab.path.display().to_string();
@@ -1468,11 +1486,11 @@ impl Veldir {
                 if focused {ui.label(RichText::new("ATTIVO").small().color(ACCENT));}
                 ui.label(RichText::new(format!("{count} selezionati")).small().color(TEXT_MUTED));
             });
-            ui.label(RichText::new(path).small().color(TEXT_MUTED));
+            ui.label(RichText::new(&path).small().color(TEXT_MUTED)).on_hover_text(path.clone());
         });
         ui.horizontal(|ui| {
             ui.label(RichText::new("Filtra").color(TEXT_MUTED));
-            let filter_width = if self.secondary.is_some() { 170.0 } else { 260.0 };
+            let filter_width = (ui.available_width() - 80.0).clamp(55.0, 260.0);
             let tab = self.panel_mut(right);
             let changed = ui.add(egui::TextEdit::singleline(&mut tab.filter)
                 .id(egui::Id::unique(if right { "folder_filter_right" } else { "folder_filter" }))
@@ -1697,8 +1715,8 @@ impl Veldir {
     }
 }
 
-impl eframe::App for Veldir {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+impl Veldir {
+    fn render_ui(&mut self, ui: &mut egui::Ui) -> [Option<egui::Rect>; 2] {
         ui.painter().rect_filled(ui.max_rect(), egui::CornerRadius::ZERO, ui.visuals().panel_fill);
         self.pump();
         self.sync_watch_paths();
@@ -1721,7 +1739,7 @@ impl eframe::App for Veldir {
                     let path=self.current().path.clone();
                     let label=path.file_name().and_then(|n|n.to_str())
                         .unwrap_or("Unità");
-                    ui.label(RichText::new(label).strong().color(TEXT_MUTED))
+                    ui.add(egui::Label::new(RichText::new(label).strong().color(TEXT_MUTED)).truncate())
                         .on_hover_text(path.display().to_string());
                 });
             });
@@ -1748,12 +1766,7 @@ impl eframe::App for Veldir {
                     let usable = (available - 10.0 - 2.0 * ui.spacing().item_spacing.x).max(440.0);
                     let left_width = (usable * self.split_ratio).clamp(220.0, usable - 220.0);
                     let right_width = usable - left_width;
-                    let left = ui.allocate_ui_with_layout(
-                        egui::vec2(left_width, content_height),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| { ui.set_width(left_width); self.pane_ui(ui, false); },
-                    );
-                    pane_areas[0] = Some(left.response.rect);
+                    pane_areas[0] = Some(self.allocate_pane(ui, left_width, content_height, false));
 
                     // A draggable splitter, persisting its relative width across launches.
                     let (rect, splitter) = ui.allocate_exact_size(
@@ -1773,20 +1786,10 @@ impl eframe::App for Veldir {
                         ui.ctx().request_repaint();
                     }
 
-                    let right = ui.allocate_ui_with_layout(
-                        egui::vec2(right_width, content_height),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| { ui.set_width(right_width); self.pane_ui(ui, true); },
-                    );
-                    pane_areas[1] = Some(right.response.rect);
+                    pane_areas[1] = Some(self.allocate_pane(ui, right_width, content_height, true));
                 } else {
-                    let width = ui.available_width().max(400.0);
-                    let left = ui.allocate_ui_with_layout(
-                        egui::vec2(width, content_height),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| { ui.set_width(width); self.pane_ui(ui, false); },
-                    );
-                    pane_areas[0] = Some(left.response.rect);
+                    let width = ui.available_width();
+                    pane_areas[0] = Some(self.allocate_pane(ui, width, content_height, false));
                 }
             },
         );
@@ -1842,6 +1845,14 @@ impl eframe::App for Veldir {
         self.dialog_ui(ui.ctx());
         self.search_ui(ui.ctx());
         self.preview_ui(ui.ctx());
+        pane_areas
+    }
+
+}
+
+impl eframe::App for Veldir {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.render_ui(ui);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -1906,10 +1917,89 @@ fn pretty_bytes(n: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_theme, column_widths, file_header_ui, egui, apply_selection, pretty_bytes, bounded_split_ratio, sort_entries, Saved, SortBy};
+    use super::{apply_theme, column_widths, file_header_ui, egui, Veldir, apply_selection, pretty_bytes, bounded_split_ratio, sort_entries, Saved, SortBy};
     use crate::fs_ops::Entry;
     use std::{collections::BTreeSet, path::PathBuf};
 
+
+
+    #[test]
+    fn full_ui_keeps_both_panes_inside_viewport_at_split_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("cartella-con-un-nome-lungo-per-verificare-il-layout-dei-pannelli");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("nota.txt"), "prova").unwrap();
+        for dark in [true, false] {
+            let ctx = egui::Context::default();
+            let mut app = Veldir::from_saved(ctx.clone(), Saved {
+                tabs: vec![folder.clone()], dual_pane: true,
+                secondary_path: Some(folder.clone()), dark_theme: dark,
+                thumbs_visible: false, live_refresh: false,
+                ..Default::default()
+            });
+            for width in [900.0, 1230.0, 1920.0] {
+                for ratio in [0.25, 0.5, 0.75] {
+                    app.split_ratio = ratio;
+                    let output = ctx.run_ui(egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO, egui::vec2(width, 790.0))),
+                        ..Default::default()
+                    }, |ui| {
+                        let viewport = ui.clip_rect();
+                        let panes = app.render_ui(ui);
+                        let left = panes[0].unwrap();
+                        let right = panes[1].unwrap();
+                        assert!(left.right() <= right.left(), "overlapping panes at {width}/{ratio}");
+                        assert!(right.right() <= viewport.right() + 1.0,
+                            "pane outside viewport at {width}/{ratio}: {right:?} vs {viewport:?}");
+                        assert!(ui.min_rect().right() <= viewport.right() + 1.0,
+                            "root grew past viewport at {width}/{ratio}");
+                        assert!(left.width() >= 219.0 && right.width() >= 219.0);
+                    });
+                    output.drop_without_applying_deltas();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn f6_switches_focus_and_ctrl_a_selects_only_filtered_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("nota.txt"), "prova").unwrap();
+        std::fs::write(dir.path().join("dati.csv"), "prova").unwrap();
+        let ctx = egui::Context::default();
+        let mut app = Veldir::from_saved(ctx.clone(), Saved {
+            tabs: vec![dir.path().to_path_buf()], dual_pane: true,
+            secondary_path: Some(dir.path().to_path_buf()),
+            live_refresh: false, thumbs_visible: false, ..Default::default()
+        });
+        let output = ctx.run_ui(egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::F6, physical_key: None, pressed: true,
+                repeat: false, modifiers: egui::Modifiers::NONE,
+            }], ..Default::default()
+        }, |ui| app.keyboard(ui.ctx()));
+        output.drop_without_applying_deltas();
+        assert!(app.focused_right);
+        // Wait-free setup after the asynchronous folder result is drained.
+        while app.rx.try_recv().is_ok() {}
+        let tab = app.current_mut();
+        tab.loading = false;
+        tab.entries = crate::fs_ops::list(dir.path()).unwrap();
+        tab.filter = "txt".into();
+        let modifiers = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
+        let output = ctx.run_ui(egui::RawInput {
+            modifiers,
+            events: vec![egui::Event::Key {
+                key: egui::Key::A, physical_key: None, pressed: true,
+                repeat: false, modifiers,
+            }], ..Default::default()
+        }, |ui| app.keyboard(ui.ctx()));
+        output.drop_without_applying_deltas();
+        assert_eq!(app.current().selected.len(), 1);
+        assert!(app.current().selected.contains(&dir.path().join("nota.txt")));
+        assert!(app.panel(false).selected.is_empty());
+    }
 
     #[test]
     fn theme_is_explicit_and_readable_in_both_system_modes() {

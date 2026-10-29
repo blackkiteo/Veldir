@@ -459,6 +459,113 @@ impl Veldir {
         });
     }
 
+    fn start_search(&mut self) {
+        let query = self.search_query.trim().to_owned();
+        if query.is_empty() { self.status = "Inserisci almeno un carattere per cercare".into(); return; }
+        self.search_cancel.store(true,Ordering::Relaxed);
+        self.search_cancel = Arc::new(AtomicBool::new(false));
+        self.search_generation += 1;
+        let generation = self.search_generation;
+        let root = self.search_root.clone();
+        let sender = self.tx.clone();
+        let ctx = self.context.clone();
+        let cancelled = self.search_cancel.clone();
+        self.searching = true;
+        self.search_results.clear();
+        self.status = "Ricerca in corso...".into();
+        std::thread::spawn(move || {
+            let result = search::find(&root,&query,250,&cancelled);
+            let _ = sender.send(Message::SearchFinished{generation,result});
+            ctx.request_repaint();
+        });
+    }
+
+    fn update_preview(&mut self) {
+        if !self.preview_visible { return; }
+        let wanted = self.selected_one();
+        if wanted == self.preview_request { return; }
+        self.preview_generation += 1;
+        self.preview_request = wanted.clone();
+        self.preview_data = None;
+        if let Some(path) = wanted {
+            let generation = self.preview_generation;
+            let sender = self.tx.clone();
+            let ctx = self.context.clone();
+            std::thread::spawn(move || {
+                let result = preview::details(&path);
+                let _ = sender.send(Message::PreviewFinished{generation,result});
+                ctx.request_repaint();
+            });
+        }
+    }
+
+    fn search_ui(&mut self, ctx: &egui::Context) {
+        if !self.search_visible { return; }
+        let mut open = self.search_visible;
+        let mut execute_search = false;
+        let mut choose = None;
+        let mut cancel_search = false;
+        egui::Window::new("Ricerca ricorsiva").open(&mut open)
+            .default_size([690.0,450.0]).resizable(true).show(ctx,|ui| {
+            ui.label(RichText::new(format!("Cartella: {}",self.search_root.display())).small().color(TEXT_MUTED));
+            ui.horizontal(|ui| {
+                let response = ui.add(egui::TextEdit::singleline(&mut self.search_query)
+                    .desired_width(380.0).hint_text("Nome file o ricerca fuzzy"));
+                if response.lost_focus() && ui.input(|i|i.key_pressed(egui::Key::Enter)) { execute_search=true; }
+                if ui.add_enabled(!self.searching,egui::Button::new("Cerca")).clicked() { execute_search=true; }
+                if self.searching && ui.button("Interrompi").clicked() { cancel_search=true; }
+            });
+            ui.label(RichText::new("Ricerca in sottocartelle, massimo 250 risultati. Collegamenti esclusi.")
+                .small().color(TEXT_MUTED));
+            ui.separator();
+            if self.searching { ui.spinner(); }
+            egui::ScrollArea::vertical().max_height(330.0).show(ui,|ui| {
+                for hit in &self.search_results {
+                    let icon = if hit.is_dir {"▣"} else {"▤"};
+                    if ui.add(egui::Button::new(format!("{icon} {}",hit.path.display())).frame(false))
+                        .on_hover_text("Apri posizione").clicked() { choose=Some(hit.path.clone()); }
+                }
+            });
+        });
+        self.search_visible = open;
+        if cancel_search {
+            self.search_cancel.store(true,Ordering::Relaxed);
+            self.search_generation += 1;
+            self.searching = false;
+            self.status="Ricerca interrotta".into();
+        }
+        if execute_search { self.start_search(); }
+        if let Some(path)=choose {
+            self.search_visible=false;
+            if path.is_dir() { self.navigate(path); }
+            else if let Some(parent)=path.parent() { self.navigate(parent.to_path_buf()); }
+        }
+    }
+
+    fn preview_ui(&mut self, ctx: &egui::Context) {
+        if !self.preview_visible { return; }
+        let mut open = self.preview_visible;
+        egui::Window::new("Dettagli e anteprima").open(&mut open)
+            .default_size([430.0,480.0]).resizable(true).show(ctx,|ui| {
+            if let Some(data)=&self.preview_data {
+                ui.heading(data.path.file_name().unwrap_or_default().to_string_lossy());
+                ui.label(format!("Tipo: {}  •  Dimensione: {}",data.kind,pretty_bytes(data.bytes)));
+                ui.label(RichText::new(data.path.display().to_string()).small().color(TEXT_MUTED));
+                ui.separator();
+                if let Some(note)=&data.note { ui.label(RichText::new(note).small().color(TEXT_MUTED)); }
+                if let Some(content)=&data.text {
+                    egui::ScrollArea::both().max_height(350.0).show(ui,|ui| {
+                        ui.add(egui::Label::new(RichText::new(content).monospace()).wrap());
+                    });
+                }
+            } else {
+                ui.label("Seleziona un file per visualizzarne i dettagli");
+            }
+        });
+        self.preview_visible=open;
+        if !open { self.preview_request=None; self.preview_data=None; }
+    }
+
     fn selected(&self) -> Vec<PathBuf> { self.current().selected.iter().cloned().collect() }
 
     fn selected_one(&self) -> Option<PathBuf> {

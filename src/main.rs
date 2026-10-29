@@ -4,6 +4,8 @@ mod fs_ops;
 mod search;
 mod preview;
 mod shell_clipboard;
+mod image_view;
+mod native_icons;
 
 use eframe::egui;
 

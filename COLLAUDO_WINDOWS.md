@@ -1,4 +1,4 @@
-# Piano di collaudo Veldir 0.6.0 — Windows 10/11
+# Piano di collaudo Veldir 0.7.0 — Windows 10/11
 
 **Eseguire solo su file di prova, mai su dati importanti.** Il passaggio della CI non sostituisce un collaudo manuale della GUI e delle operazioni.
 
@@ -21,6 +21,14 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 | UI-03 | Nascondi la barra laterale e riapri | Stato della barra conservato |
 | UI-04 | Clicca su una cartella nella barra percorso | Navigazione immediata alla cartella scelta |
 | SORT-01 | Clicca Nome, Dimensione e Modificato due volte | Ordinamento crescente/decrescente, cartelle sempre prime |
+| ICON-01 | Apri una cartella con PDF, JPG, DOCX, ZIP e cartelle | Icone associate ai tipi di Windows, senza blocchi |
+| ICON-02 | Cambia directory e torna alla precedente | Icone caricate da cache, UI responsiva |
+| IMG-01 | Attiva Miniature ON, apri cartella con JPG/PNG/WebP/GIF/BMP | Miniature visibili solo sulle righe caricate |
+| IMG-02 | Apri una cartella con 1.000 immagini e scorri | Caricamenti non bloccanti; RAM e tempi da misurare |
+| IMG-03 | Seleziona un JPEG e premi F3 | Anteprima a colori con proporzioni corrette |
+| IMG-04 | Seleziona un'immagine >32 MiB o >30 MP | Rifiuto controllato, nessun blocco della UI |
+| IMG-05 | Disattiva miniature, chiudi e riapri Veldir | Miniature rimangono disattivate; icone native visibili |
+| IMG-06 | Cambia selezione rapidamente tra due immagini e testo | Non appare un'anteprima appartenente alla selezione precedente |
 | SEL-03 | Dopo aver filtrato, usa Ctrl+A e poi Esc | Selezionati solo file visibili; Esc azzera |
 | PAN-02 | Cambia pannello con clic e F6 | Toolbar applicata al pannello attivo |
 | PAN-03 | Chiudi e riapri l'app in modalità doppia | Percorsi ripristinati |

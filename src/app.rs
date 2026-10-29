@@ -1,9 +1,9 @@
 use crate::fs_ops::{self, Entry, Job};
-use crate::{preview,search};
+use crate::{preview,search,image_view,native_icons};
 use chrono::{DateTime, Local};
 use eframe::egui::{self, Color32, RichText};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet,HashMap,HashSet,VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc,atomic::{AtomicBool,Ordering}};
@@ -24,6 +24,7 @@ struct Saved {
     split_ratio: f32,
     dark_theme: bool,
     preview_visible: bool,
+    thumbs_visible: bool,
 }
 
 impl Default for Saved {
@@ -33,6 +34,7 @@ impl Default for Saved {
             secondary_path: None, dual_pane: false,
             sidebar_visible: true, split_ratio: 0.5,
             dark_theme: true, preview_visible: false,
+            thumbs_visible: true,
         }
     }
 }
@@ -91,6 +93,9 @@ enum Message {
     JobProgress(fs_ops::Progress),
     SearchFinished { generation: u64, result: Result<Vec<search::Hit>, String> },
     PreviewFinished { generation: u64, result: Result<preview::Details, String> },
+    PreviewImageLoaded { generation:u64, result:Result<image_view::Bitmap,String> },
+    ThumbnailLoaded {path:PathBuf,result:Result<image_view::Bitmap,String>},
+    IconLoaded {key:String,result:Result<image_view::Bitmap,String>},
 }
 
 enum Dialog {
@@ -141,6 +146,15 @@ pub struct Veldir {
     preview_request: Option<PathBuf>,
     preview_generation: u64,
     preview_data: Option<preview::Details>,
+    preview_image: Option<egui::TextureHandle>,
+    thumbs_visible: bool,
+    thumb_cache: HashMap<PathBuf,egui::TextureHandle>,
+    thumb_order: VecDeque<PathBuf>,
+    thumb_pending: HashSet<PathBuf>,
+    thumb_failed: HashSet<PathBuf>,
+    icon_cache: HashMap<String,egui::TextureHandle>,
+    icon_pending: HashSet<String>,
+    icon_failed: HashSet<String>,
     searching: bool,
     search_visible: bool,
     search_query: String,
@@ -204,6 +218,11 @@ impl Veldir {
             dark_theme: saved.dark_theme,
             preview_visible: saved.preview_visible,
             preview_request: None, preview_generation: 0, preview_data: None,
+            preview_image: None, thumbs_visible: saved.thumbs_visible,
+            thumb_cache: HashMap::new(), thumb_order: VecDeque::new(),
+            thumb_pending: HashSet::new(), thumb_failed: HashSet::new(),
+            icon_cache: HashMap::new(), icon_pending: HashSet::new(),
+            icon_failed: HashSet::new(),
             searching: false, search_visible: false, search_query: String::new(),
             search_root: PathBuf::new(), search_results: Vec::new(),
             search_generation: 0, search_cancel: Arc::new(AtomicBool::new(false)),
@@ -447,6 +466,41 @@ impl Veldir {
                         self.preview_data = result.ok();
                     }
                 }
+                Message::PreviewImageLoaded {generation,result} => {
+                    if generation == self.preview_generation {
+                        self.preview_image = result.ok().map(|bitmap|
+                            Self::make_texture(&self.context,"veldir-preview",bitmap));
+                    }
+                }
+                Message::ThumbnailLoaded {path,result} => {
+                    self.thumb_pending.remove(&path);
+                    match result {
+                        Ok(bitmap) => {
+                            // LRU-ish bounded cache; old textures are released.
+                            while self.thumb_order.len() >= 128 {
+                                if let Some(old)=self.thumb_order.pop_front() {
+                                    self.thumb_cache.remove(&old);
+                                }
+                            }
+                            let tex=Self::make_texture(&self.context,
+                                &format!("thumb:{}",path.display()),bitmap);
+                            self.thumb_cache.insert(path.clone(),tex);
+                            self.thumb_order.push_back(path);
+                        }
+                        Err(_) => {self.thumb_failed.insert(path);}
+                    }
+                }
+                Message::IconLoaded {key,result} => {
+                    self.icon_pending.remove(&key);
+                    match result {
+                        Ok(bitmap) => {
+                            let tex=Self::make_texture(&self.context,
+                                &format!("shell-icon:{key}"),bitmap);
+                            self.icon_cache.insert(key,tex);
+                        }
+                        Err(_) => {self.icon_failed.insert(key);}
+                    }
+                }
             }
         }
     }
@@ -493,6 +547,44 @@ impl Veldir {
         });
     }
 
+    fn make_texture(ctx:&egui::Context,label:&str,bitmap:image_view::Bitmap)
+        -> egui::TextureHandle {
+        let image=egui::ColorImage::from_rgba_unmultiplied(
+            [bitmap.width,bitmap.height],&bitmap.rgba);
+        ctx.load_texture(label,image,egui::TextureOptions::LINEAR)
+    }
+
+    fn schedule_assets(&mut self,images:Vec<PathBuf>,icons:Vec<String>) {
+        if self.thumbs_visible {
+            for path in images {
+                if self.thumb_pending.len() >= 6 {break;}
+                if self.thumb_pending.contains(&path) || self.thumb_cache.contains_key(&path)
+                   || self.thumb_failed.contains(&path) {continue;}
+                self.thumb_pending.insert(path.clone());
+                let sender=self.tx.clone();
+                let ctx=self.context.clone();
+                std::thread::spawn(move || {
+                    let result=image_view::load(&path,40);
+                    let _=sender.send(Message::ThumbnailLoaded{path,result});
+                    ctx.request_repaint();
+                });
+            }
+        }
+        for key in icons {
+            if self.icon_pending.len() >= 4 {break;}
+            if self.icon_pending.contains(&key) || self.icon_cache.contains_key(&key)
+                || self.icon_failed.contains(&key) {continue;}
+            self.icon_pending.insert(key.clone());
+            let sender=self.tx.clone();
+            let ctx=self.context.clone();
+            std::thread::spawn(move || {
+                let result=native_icons::load(&key);
+                let _=sender.send(Message::IconLoaded{key,result});
+                ctx.request_repaint();
+            });
+        }
+    }
+
     fn update_preview(&mut self) {
         if !self.preview_visible { return; }
         let wanted = self.selected_one();
@@ -500,10 +592,21 @@ impl Veldir {
         self.preview_generation += 1;
         self.preview_request = wanted.clone();
         self.preview_data = None;
+        self.preview_image = None;
         if let Some(path) = wanted {
             let generation = self.preview_generation;
             let sender = self.tx.clone();
             let ctx = self.context.clone();
+            if image_view::supported(&path) {
+                let image_path=path.clone();
+                let image_tx=self.tx.clone();
+                let image_ctx=self.context.clone();
+                std::thread::spawn(move || {
+                    let result=image_view::load(&image_path,1200);
+                    let _=image_tx.send(Message::PreviewImageLoaded{generation,result});
+                    image_ctx.request_repaint();
+                });
+            }
             std::thread::spawn(move || {
                 let result = preview::details(&path);
                 let _ = sender.send(Message::PreviewFinished{generation,result});
@@ -565,7 +668,16 @@ impl Veldir {
                 ui.label(format!("Tipo: {}  •  Dimensione: {}",data.kind,pretty_bytes(data.bytes)));
                 ui.label(RichText::new(data.path.display().to_string()).small().color(TEXT_MUTED));
                 ui.separator();
-                if let Some(note)=&data.note { ui.label(RichText::new(note).small().color(TEXT_MUTED)); }
+                if let Some(tex)=&self.preview_image {
+                    let size=tex.size_vec2();
+                    let scale=(440.0/size.x).min(340.0/size.y).min(1.0);
+                    ui.add(egui::Image::new(tex).fit_to_exact_size(size*scale));
+                }
+                if let Some(note)=&data.note {
+                    if self.preview_image.is_none() {
+                        ui.label(RichText::new(note).small().color(TEXT_MUTED));
+                    }
+                }
                 if let Some(content)=&data.text {
                     egui::ScrollArea::both().max_height(350.0).show(ui,|ui| {
                         ui.add(egui::Label::new(RichText::new(content).monospace()).wrap());
@@ -576,7 +688,11 @@ impl Veldir {
             }
         });
         self.preview_visible=open;
-        if !open { self.preview_request=None; self.preview_data=None; }
+        if !open {
+            self.preview_request=None;
+            self.preview_data=None;
+            self.preview_image=None;
+        }
     }
 
     fn selected(&self) -> Vec<PathBuf> { self.current().selected.iter().cloned().collect() }
@@ -831,9 +947,13 @@ impl Veldir {
                 self.search_results.clear();
             }
             if ui.button(if self.preview_visible { "▤ Chiudi anteprima" } else { "▤ Anteprima" })
-                .on_hover_text("Anteprima testuale e dettagli · F3").clicked() {
+                .on_hover_text("Anteprima immagini, testo e dettagli · F3").clicked() {
                 self.preview_visible = !self.preview_visible;
                 self.preview_request = None;
+            }
+            if ui.button(if self.thumbs_visible { "▦ Miniature ON" } else { "▦ Miniature OFF" })
+                .on_hover_text("Mostra miniature delle immagini negli elenchi").clicked() {
+                self.thumbs_visible = !self.thumbs_visible;
             }
             if ui.button(if self.dark_theme { "☼ Tema chiaro" } else { "☾ Tema scuro" })
                 .on_hover_text("Cambia il tema di Veldir").clicked() {
@@ -932,6 +1052,8 @@ impl Veldir {
         let mut drag_start: Option<PathBuf> = None;
         let mut menu_action: Option<(&'static str,PathBuf)> = None;
         let mut requested_sort = None;
+        let mut thumbnails_needed = Vec::new();
+        let mut icons_needed = Vec::new();
         let tab = self.panel(right);
         let filter = tab.filter.to_lowercase();
         let indices: Vec<usize> = tab.entries.iter().enumerate()
@@ -972,7 +1094,7 @@ impl Veldir {
         if count == 0 { ui.add_space(18.0); ui.label("Nessun elemento trovato"); return; }
         egui::ScrollArea::vertical().auto_shrink([false, false])
             .id_salt(("rows", tab.id, tab.generation))
-            .show_rows(ui, 28.0, count, |ui, range| {
+            .show_rows(ui, 37.0, count, |ui, range| {
                 for row in range {
                     let item = &tab.entries[indices[row]];
                     let selected = tab.selected.contains(&item.path);
@@ -985,7 +1107,25 @@ impl Veldir {
                         "zip" | "7z" | "rar" => "▦",
                         "exe" | "msi" => "◈", _ => "▫",
                     }};
-                    let name = format!("{symbol}   {}",item.name);
+                    let name = item.name.clone();
+                    let key = native_icons::key(&item.name,item.is_dir);
+                    if !self.icon_cache.contains_key(&key)
+                        && !self.icon_pending.contains(&key)
+                        && !self.icon_failed.contains(&key) {
+                        icons_needed.push(key.clone());
+                    }
+                    if self.thumbs_visible && image_view::supported(&item.path)
+                        && !self.thumb_cache.contains_key(&item.path)
+                        && !self.thumb_pending.contains(&item.path)
+                        && !self.thumb_failed.contains(&item.path) {
+                        thumbnails_needed.push(item.path.clone());
+                    }
+                    let icon = if self.thumbs_visible {
+                        self.thumb_cache.get(&item.path)
+                            .or_else(|| self.icon_cache.get(&key))
+                    } else {
+                        self.icon_cache.get(&key)
+                    };
                     let file_type = if item.is_dir { "Cartella".to_owned() }
                         else { item.path.extension().and_then(|e| e.to_str())
                             .map(str::to_ascii_uppercase).unwrap_or_else(|| "File".into()) };
@@ -995,9 +1135,17 @@ impl Veldir {
                         d.format("%d/%m/%Y %H:%M").to_string()
                     }).unwrap_or_else(|| "—".into());
                     let response = ui.horizontal(|ui| {
-                        let r = ui.add_sized([w_name, 25.0], egui::Button::new(name)
-                            .sense(egui::Sense::click_and_drag())
-                            .selected(selected).frame(selected));
+                        if let Some(tex)=icon {
+                            ui.add_sized([32.0,32.0],egui::Image::new(tex)
+                                .fit_to_exact_size(egui::vec2(28.0,28.0)));
+                        } else {
+                            ui.add_sized([32.0,32.0],egui::Label::new(
+                                RichText::new(symbol).color(ACCENT)));
+                        }
+                        let r = ui.add_sized([(w_name-35.0).max(75.0), 32.0],
+                            egui::Button::new(name)
+                                .sense(egui::Sense::click_and_drag())
+                                .selected(selected).frame(selected));
                         if !dual { ui.add_sized([w_type, 25.0], egui::Label::new(file_type)); }
                         ui.add_sized([w_size, 25.0], egui::Label::new(size));
                         if !dual { ui.label(RichText::new(modified).color(TEXT_MUTED).small()); }
@@ -1025,6 +1173,7 @@ impl Veldir {
                     if response.double_clicked() { open = Some(item.path.clone()); }
                 }
             });
+        self.schedule_assets(thumbnails_needed,icons_needed);
         if let Some((path, modifiers)) = click {
             // Selection is resolved against visible, filtered order.
             let ordered: Vec<PathBuf> = indices.iter()
@@ -1278,7 +1427,7 @@ impl eframe::App for Veldir {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("◈ VELDIR").strong().size(18.0).color(ACCENT));
-            ui.label(RichText::new("0.6.0   •   FILE MANAGER FOR WINDOWS").small().color(TEXT_MUTED));
+            ui.label(RichText::new("0.7.0   •   FILE MANAGER FOR WINDOWS").small().color(TEXT_MUTED));
         });
         ui.add_space(8.0);
         self.tabs_ui(ui);
@@ -1400,6 +1549,7 @@ impl eframe::App for Veldir {
             split_ratio: self.split_ratio,
             dark_theme: self.dark_theme,
             preview_visible: self.preview_visible,
+            thumbs_visible: self.thumbs_visible,
         };
         eframe::set_value(storage, "veldir_state", &saved);
     }

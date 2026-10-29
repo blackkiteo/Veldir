@@ -9,7 +9,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 const ACCENT: Color32 = Color32::from_rgb(112, 175, 250);
 const TEXT_MUTED: Color32 = Color32::from_rgb(144, 155, 171);
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct Saved {
     favorites: Vec<PathBuf>,
@@ -17,6 +17,22 @@ struct Saved {
     active: usize,
     secondary_path: Option<PathBuf>,
     dual_pane: bool,
+    sidebar_visible: bool,
+    split_ratio: f32,
+}
+
+impl Default for Saved {
+    fn default() -> Self {
+        Self {
+            favorites: Vec::new(), tabs: Vec::new(), active: 0,
+            secondary_path: None, dual_pane: false,
+            sidebar_visible: true, split_ratio: 0.5,
+        }
+    }
+}
+
+fn bounded_split_ratio(value: f32) -> f32 {
+    if value.is_finite() { value.clamp(0.25, 0.75) } else { 0.5 }
 }
 
 struct Tab {
@@ -81,6 +97,8 @@ pub struct Veldir {
     status: String,
     editing_address: bool,
     address_input: String,
+    sidebar_visible: bool,
+    split_ratio: f32,
 }
 
 impl Veldir {
@@ -91,7 +109,16 @@ impl Veldir {
         visual.extreme_bg_color = Color32::from_rgb(13, 18, 26);
         visual.selection.bg_fill = Color32::from_rgb(50, 86, 127);
         visual.hyperlink_color = ACCENT;
+        visual.widgets.inactive.corner_radius = egui::CornerRadius::same(7);
+        visual.widgets.hovered.corner_radius = egui::CornerRadius::same(7);
+        visual.widgets.active.corner_radius = egui::CornerRadius::same(7);
+        visual.widgets.inactive.weak_bg_fill = Color32::from_rgb(34, 42, 54);
+        visual.widgets.hovered.weak_bg_fill = Color32::from_rgb(47, 59, 74);
         cc.egui_ctx.set_visuals(visual);
+        cc.egui_ctx.style_mut(|style| {
+            style.spacing.item_spacing = egui::vec2(7.0, 6.0);
+            style.spacing.button_padding = egui::vec2(10.0, 5.0);
+        });
 
         let saved: Saved = cc.storage.and_then(|s| eframe::get_value(s, "veldir_state"))
             .unwrap_or_default();
@@ -119,6 +146,8 @@ impl Veldir {
             favorites: saved.favorites, shortcuts, drives,
             clipboard: None, busy: false, dialog: Dialog::None,
             status: "Pronto".into(), editing_address: false, address_input: String::new(),
+            sidebar_visible: saved.sidebar_visible,
+            split_ratio: bounded_split_ratio(saved.split_ratio),
         };
         let restored: Vec<PathBuf> = saved.tabs.into_iter().filter(|p| p.is_dir()).take(12).collect();
         if restored.is_empty() {
@@ -479,6 +508,30 @@ impl Veldir {
         }
     }
 
+    fn breadcrumbs_ui(&mut self, ui: &mut egui::Ui) {
+        let path = self.current().path.clone();
+        let ancestors: Vec<PathBuf> = path.ancestors().map(Path::to_path_buf).collect();
+        let mut navigation = None;
+        ui.horizontal(|ui| {
+            for (index, crumb) in ancestors.iter().rev().enumerate() {
+                if index > 0 { ui.label(RichText::new("›").color(TEXT_MUTED)); }
+                let part = crumb.file_name().and_then(|n| n.to_str())
+                    .map(str::to_owned).unwrap_or_else(|| crumb.display().to_string());
+                let is_current = crumb == &path;
+                let label = if part.chars().count() > 22 {
+                    format!("{}…", part.chars().take(21).collect::<String>())
+                } else { part };
+                if is_current {
+                    ui.label(RichText::new(label).strong().color(ACCENT));
+                } else if ui.add(egui::Button::new(label).frame(false))
+                    .on_hover_text(crumb.display().to_string()).clicked() {
+                    navigation = Some(crumb.clone());
+                }
+            }
+        });
+        if let Some(target) = navigation { self.navigate(target); }
+    }
+
     fn toolbar_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui.add_enabled(!self.current().back.is_empty(), egui::Button::new("←"))
@@ -498,16 +551,20 @@ impl Veldir {
                 }
                 if ui.button("Vai").clicked() { self.navigate(PathBuf::from(self.address_input.trim())); }
             } else {
-                let text = self.current().path.display().to_string();
-                if ui.add(egui::Button::new(RichText::new(format!("⌁   {text}")).monospace())
-                    .frame(false)).on_hover_text("Modifica percorso · Ctrl+L").clicked() {
+                if ui.small_button("⌁").on_hover_text("Modifica percorso · Ctrl+L").clicked() {
                     self.editing_address = true;
-                    self.address_input = text;
+                    self.address_input = self.current().path.display().to_string();
                 }
+                self.breadcrumbs_ui(ui);
             }
         });
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
+            if ui.button(if self.sidebar_visible { "◧ Nascondi barra" } else { "☰ Mostra barra" })
+                .on_hover_text("Mostra/nascondi la barra laterale").clicked() {
+                self.sidebar_visible = !self.sidebar_visible;
+            }
+            ui.separator();
             if ui.add_enabled(!self.busy, egui::Button::new("＋ Cartella"))
                 .on_hover_text("Crea cartella").clicked() {
                 self.dialog = Dialog::NewFolder("Nuova cartella".into());
@@ -795,7 +852,7 @@ impl eframe::App for Veldir {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("◈ VELDIR").strong().size(18.0).color(ACCENT));
-            ui.label(RichText::new("0.2.1  ·  LIGHT FILE MANAGER").small().color(TEXT_MUTED));
+            ui.label(RichText::new("0.3.0   •   FILE MANAGER FOR WINDOWS").small().color(TEXT_MUTED));
         });
         ui.add_space(8.0);
         self.tabs_ui(ui);
@@ -809,24 +866,51 @@ impl eframe::App for Veldir {
             egui::Layout::left_to_right(egui::Align::Min),
             |ui| {
                 ui.add_space(4.0);
-                ui.vertical(|ui| { self.sidebar_ui(ui); });
-                ui.separator();
-                if self.secondary.is_some() {
-                    let width = (ui.available_width() - 14.0).max(520.0) / 2.0;
-                    ui.vertical(|ui| {
-                        ui.set_min_width(width);
-                        self.pane_ui(ui, false);
-                    });
+                if self.sidebar_visible {
+                    ui.vertical(|ui| { self.sidebar_ui(ui); });
                     ui.separator();
-                    ui.vertical(|ui| {
-                        ui.set_min_width(width);
-                        self.pane_ui(ui, true);
-                    });
+                }
+                if self.secondary.is_some() {
+                    let available = ui.available_width().max(470.0);
+                    let usable = (available - 12.0).max(450.0);
+                    let left_width = (usable * self.split_ratio).clamp(220.0, usable - 220.0);
+                    let right_width = usable - left_width;
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(left_width, content_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| { ui.set_width(left_width); self.pane_ui(ui, false); },
+                    );
+
+                    // A draggable splitter, persisting its relative width across launches.
+                    let (rect, splitter) = ui.allocate_exact_size(
+                        egui::vec2(10.0, content_height), egui::Sense::click_and_drag());
+                    let splitter = splitter.on_hover_cursor(egui::CursorIcon::ResizeHorizontal)
+                        .on_hover_text("Trascina per ridimensionare i pannelli");
+                    let color = if splitter.dragged() || splitter.hovered() {
+                        ACCENT
+                    } else { Color32::from_rgb(71, 83, 101) };
+                    let center = rect.center();
+                    ui.painter().rect_filled(
+                        egui::Rect::from_center_size(center, egui::vec2(3.0, 46.0)),
+                        egui::CornerRadius::same(2), color);
+                    if splitter.dragged() {
+                        self.split_ratio = bounded_split_ratio(
+                            self.split_ratio + splitter.drag_delta().x / usable);
+                        ui.ctx().request_repaint();
+                    }
+
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(right_width, content_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| { ui.set_width(right_width); self.pane_ui(ui, true); },
+                    );
                 } else {
-                    ui.vertical(|ui| {
-                        ui.set_min_width(ui.available_width().max(400.0));
-                        self.pane_ui(ui, false);
-                    });
+                    let width = ui.available_width().max(400.0);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(width, content_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| { ui.set_width(width); self.pane_ui(ui, false); },
+                    );
                 }
             },
         );
@@ -835,7 +919,8 @@ impl eframe::App for Veldir {
             let tab = self.current();
             let count = tab.entries.iter().filter(|e| tab.filter.is_empty() ||
                 e.name.to_lowercase().contains(&tab.filter.to_lowercase())).count();
-            ui.label(RichText::new(format!("{count} elementi  ·  {}", tab.path.display())).small().color(TEXT_MUTED));
+            ui.label(RichText::new(format!("{count} elementi  ·  {} selezionati", tab.selected.len())).small().color(TEXT_MUTED));
+            ui.label(RichText::new(tab.path.display().to_string()).small().color(TEXT_MUTED));
             ui.separator();
             if self.busy { ui.spinner(); }
             ui.label(RichText::new(&self.status).small().color(TEXT_MUTED));
@@ -850,6 +935,8 @@ impl eframe::App for Veldir {
             active: self.active,
             secondary_path: self.secondary.as_ref().map(|p| p.path.clone()),
             dual_pane: self.secondary.is_some(),
+            sidebar_visible: self.sidebar_visible,
+            split_ratio: self.split_ratio,
         };
         eframe::set_value(storage, "veldir_state", &saved);
     }
@@ -899,8 +986,18 @@ fn pretty_bytes(n: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_selection, pretty_bytes};
+    use super::{apply_selection, pretty_bytes, bounded_split_ratio, Saved};
     use std::{collections::BTreeSet, path::PathBuf};
+
+    #[test]
+    fn previous_sessions_default_to_visible_sidebar_and_even_split() {
+        let saved = Saved::default();
+        assert!(saved.sidebar_visible);
+        assert!((saved.split_ratio - 0.5).abs() < f32::EPSILON);
+        assert_eq!(bounded_split_ratio(f32::NAN), 0.5);
+        assert_eq!(bounded_split_ratio(-1.0), 0.25);
+        assert_eq!(bounded_split_ratio(2.0), 0.75);
+    }
 
     #[test]
     fn pretty_bytes_uses_correct_binary_units() {

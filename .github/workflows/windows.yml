@@ -44,7 +44,7 @@ jobs:
       - name: Upload EXE and checksum
         uses: actions/upload-artifact@v4
         with:
-          name: Veldir-v0.4.0-Windows-x64
+          name: Veldir-v0.5.0-Windows-x64
           path: |
             target/release/veldir.exe
             target/release/SHA256SUMS.txt

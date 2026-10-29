@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc,atomic::{AtomicBool,Ordering}};
+use std::time::Instant;
 
 const ACCENT: Color32 = Color32::from_rgb(112, 175, 250);
 const TEXT_MUTED: Color32 = Color32::from_rgb(144, 155, 171);
@@ -87,7 +88,7 @@ impl Tab {
 enum Message {
     FolderLoaded { tab_id: u64, generation: u64, result: Result<Vec<Entry>, String> },
     JobFinished { result: Result<String, String>, is_move: bool },
-    JobProgress { done: usize, total: usize },
+    JobProgress(fs_ops::Progress),
     SearchFinished { generation: u64, result: Result<Vec<search::Hit>, String> },
     PreviewFinished { generation: u64, result: Result<preview::Details, String> },
 }
@@ -142,7 +143,8 @@ pub struct Veldir {
     search_generation: u64,
     search_cancel: Arc<AtomicBool>,
     job_cancel: Arc<AtomicBool>,
-    job_progress: Option<(usize, usize)>,
+    job_progress: Option<fs_ops::Progress>,
+    job_started_at: Option<Instant>,
 }
 
 impl Veldir {
@@ -199,6 +201,7 @@ impl Veldir {
             search_root: PathBuf::new(), search_results: Vec::new(),
             search_generation: 0, search_cancel: Arc::new(AtomicBool::new(false)),
             job_cancel: Arc::new(AtomicBool::new(false)), job_progress: None,
+            job_started_at: None,
         };
         if !app.dark_theme { cc.egui_ctx.set_visuals(egui::Visuals::light()); }
         let restored: Vec<PathBuf> = saved.tabs.into_iter().filter(|p| p.is_dir()).take(12).collect();
@@ -401,6 +404,7 @@ impl Veldir {
                 Message::JobFinished { result, is_move } => {
                     self.busy = false;
                     self.job_progress = None;
+                    self.job_started_at = None;
                     match result {
                         Ok(message) => {
                             if is_move { self.clipboard = None; }
@@ -414,9 +418,10 @@ impl Veldir {
                         }
                     }
                 }
-                Message::JobProgress { done, total } => {
-                    self.job_progress = Some((done,total));
-                    self.status = format!("Completati {done}/{total} elementi");
+                Message::JobProgress(progress) => {
+                    self.job_progress = Some(progress);
+                    self.status = format!("Completati {}/{} elementi",
+                        progress.done_items, progress.total_items);
                 }
                 Message::SearchFinished { generation, result } => {
                     if generation == self.search_generation {
@@ -443,6 +448,7 @@ impl Veldir {
         if self.busy { return; }
         self.busy = true;
         self.job_progress = None;
+        self.job_started_at = Some(Instant::now());
         self.job_cancel = Arc::new(AtomicBool::new(false));
         self.status = "Operazione in corso...".into();
         let sender = self.tx.clone();
@@ -450,8 +456,8 @@ impl Veldir {
         let cancelled = self.job_cancel.clone();
         let is_move = matches!(&job, Job::Move { .. } | Job::MoveMany { .. });
         std::thread::spawn(move || {
-            let result = fs_ops::execute_progress(job,&cancelled,|done,total| {
-                let _ = sender.send(Message::JobProgress { done,total });
+            let result = fs_ops::execute_progress(job,&cancelled,|progress| {
+                let _ = sender.send(Message::JobProgress(progress));
                 ctx.request_repaint();
             });
             let _ = sender.send(Message::JobFinished { result, is_move });
@@ -605,6 +611,18 @@ impl Veldir {
         }
     }
 
+    fn import_explorer_clipboard(&mut self) {
+        if self.busy || !matches!(self.dialog, Dialog::None) { return; }
+        match crate::shell_clipboard::files_from_explorer() {
+            Ok(sources) => {
+                self.dialog = Dialog::ExternalDrop {
+                    sources, destination: self.current().path.clone(),
+                };
+            }
+            Err(error) => { self.status = format!("Clipboard Windows: {error}"); }
+        }
+    }
+
     fn paste(&mut self) {
         if let Some(clip) = self.clipboard.clone() {
             let destination_folder = self.current().path.clone();
@@ -688,7 +706,9 @@ impl Veldir {
         if !ctx.egui_wants_keyboard_input() && !self.busy && matches!(self.dialog, Dialog::None) {
             if shortcut(egui::Key::C) { self.clipboard_set(false); }
             if shortcut(egui::Key::X) { self.clipboard_set(true); }
-            if shortcut(egui::Key::V) { self.paste(); }
+            if ctx.input(|i| i.modifiers.command && i.modifiers.shift
+                && i.key_pressed(egui::Key::V)) { self.import_explorer_clipboard(); }
+            else if shortcut(egui::Key::V) { self.paste(); }
             if shortcut(egui::Key::A) { self.select_all_visible(); }
             if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.current_mut().selected.clear();
@@ -822,6 +842,10 @@ impl Veldir {
                 .on_hover_text("Ctrl+X").clicked() { self.clipboard_set(true); }
             if ui.add_enabled(!self.busy && self.clipboard.is_some(), egui::Button::new("Incolla"))
                 .on_hover_text("Ctrl+V · clipboard interna").clicked() { self.paste(); }
+            if ui.add_enabled(!self.busy, egui::Button::new("Da Esplora"))
+                .on_hover_text("Copia file dalla clipboard Windows · Ctrl+Maiusc+V").clicked() {
+                self.import_explorer_clipboard();
+            }
             if ui.add_enabled(!self.busy && selected, egui::Button::new("Cestino"))
                 .on_hover_text("Canc · con conferma").clicked() { self.prepare_trash(); }
             ui.separator();
@@ -1149,9 +1173,9 @@ impl Veldir {
             Dialog::ExternalDrop { sources, destination } => {
                 let left = self.tabs[self.active].path.clone();
                 let right = self.secondary.as_ref().map(|p| p.path.clone());
-                egui::Window::new("Importa file trascinati").collapsible(false).resizable(false)
+                egui::Window::new("Importa file da Windows").collapsible(false).resizable(false)
                     .show(ctx, |ui| {
-                        ui.label(format!("{} elementi trascinati da Windows", sources.len()));
+                        ui.label(format!("{} file/cartelle selezionati da Windows", sources.len()));
                         ui.label("Scegli dove COPIARLI. Le sorgenti non verranno rimosse.");
                         ui.add_space(6.0);
                         ui.selectable_value(destination, left.clone(), format!("Sinistra: {}", left.display()));
@@ -1187,7 +1211,7 @@ impl eframe::App for Veldir {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("◈ VELDIR").strong().size(18.0).color(ACCENT));
-            ui.label(RichText::new("0.4.0   •   FILE MANAGER FOR WINDOWS").small().color(TEXT_MUTED));
+            ui.label(RichText::new("0.5.0   •   FILE MANAGER FOR WINDOWS").small().color(TEXT_MUTED));
         });
         ui.add_space(8.0);
         self.tabs_ui(ui);
@@ -1259,11 +1283,29 @@ impl eframe::App for Veldir {
             ui.separator();
             if self.busy {
                 ui.spinner();
-                if let Some((done,total))=self.job_progress {
-                    ui.add(egui::ProgressBar::new(done as f32/total.max(1) as f32)
-                        .desired_width(135.0).text(format!("{done}/{total}")));
+                if let Some(p)=self.job_progress {
+                    let ratio = if p.total_bytes > 0 {
+                        p.done_bytes as f32 / p.total_bytes as f32
+                    } else {
+                        p.done_items as f32 / p.total_items.max(1) as f32
+                    };
+                    let caption = if p.total_bytes > 0 {
+                        format!("{} / {}", pretty_bytes(p.done_bytes), pretty_bytes(p.total_bytes))
+                    } else {
+                        format!("{} / {} elementi", p.done_items, p.total_items)
+                    };
+                    ui.add(egui::ProgressBar::new(ratio.clamp(0.0,1.0))
+                        .desired_width(160.0).text(caption));
+                    if let Some(started)=self.job_started_at {
+                        let elapsed=started.elapsed().as_secs_f64();
+                        if p.done_bytes > 0 && elapsed >= 0.2 {
+                            let rate=(p.done_bytes as f64/elapsed).round() as u64;
+                            ui.label(RichText::new(format!("{}/s",pretty_bytes(rate)))
+                                .small().color(TEXT_MUTED));
+                        }
+                    }
                 }
-                if ui.button("Annulla").on_hover_text("Interrompe tra un elemento e il successivo").clicked() {
+                if ui.button("Annulla").on_hover_text("Durante la copia interrompe anche il file in corso, senza pubblicare il file parziale").clicked() {
                     self.job_cancel.store(true,Ordering::Relaxed);
                     self.status="Annullamento richiesto…".into();
                 }

@@ -1,8 +1,19 @@
-# Veldir v0.4.0 — file manager leggero per Windows
+# Veldir v0.5.0 — file manager leggero per Windows
 
 Prototipo **open source MIT** in Rust + egui, ispirato alla filosofia di File Pilot, con codice e identità indipendenti. **Non affiliato a File Pilot.**
 
 > **Stato reale:** Veldir 0.2.0 e 0.2.1 hanno superato compilazione, test e build release su GitHub Actions. La versione 0.3.0 introduce un aggiornamento dell'interfaccia; scaricare l'EXE solo da una build 0.3.0 completata con successo. **Non è ancora stato eseguito un collaudo manuale della GUI Windows. Non usare su file importanti prima di quel collaudo.**
+
+## Novità v0.5.0 — Trasferimenti più sicuri e clipboard Esplora
+
+- **Avanzamento in byte** delle copie: mostra byte copiati/totali e velocità media in barra di stato, senza caricare l'intero file in RAM.
+- **Annullamento durante una copia grande**: controllo a blocchi di 256 KiB, con eliminazione automatica dello staging parziale; nessun file incompleto viene pubblicato alla destinazione.
+- **Copia di directory** con calcolo preventivo dei byte, protezione symlink/junction e pubblicazione senza sovrascrivere file esistenti.
+- **Importa dalla clipboard di Esplora file (Windows)**: tasto «Da Esplora» oppure Ctrl+Maiusc+V, selezione destinazione e conferma.
+- Import dalla clipboard **sempre in modalità COPIA**, anche se su Windows è stato usato Taglia: nessuna eliminazione accidentale delle sorgenti. Clipboard virtuale e formati diversi da CF_HDROP non sono supportati.
+- Nuovi test automatici per integrità delle copie, progresso in byte e cancellazione a metà del file.
+
+**Limitazioni:** le copie batch sono ancora non transazionali: gli elementi già completati prima dell'annullamento rimangono copiati. La velocità indicata è una media osservata, non una promessa di prestazioni. L'importazione clipboard non esporta file verso Esplora e non gestisce cut/move in modo bidirezionale. Per i trasferimenti tra dischi, lo spostamento automatico rimane disabilitato.
 
 ## Funzioni aggiunte nella v0.4.0
 
@@ -64,7 +75,7 @@ Lo script invoca `cargo fmt --all`, `cargo check --all-targets`, `cargo test --a
 
 ### GitHub Actions
 
-Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Windows Build** viene compilata la versione Windows e, se tutti i controlli passano, viene pubblicato come artefatto `Veldir-v0.4.0-Windows-x64` con l'EXE e il suo SHA-256. La build v0.2.0 è stata verificata nella CI; **il collaudo manuale dell'interfaccia resta necessario**.
+Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Windows Build** viene compilata la versione Windows e, se tutti i controlli passano, viene pubblicato come artefatto `Veldir-v0.5.0-Windows-x64` con l'EXE e il suo SHA-256. La build v0.2.0 è stata verificata nella CI; **il collaudo manuale dell'interfaccia resta necessario**.
 
 ## Scorciatoie
 

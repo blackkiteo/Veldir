@@ -83,3 +83,22 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 
 ## Note
 Le copie batch possono fermarsi dopo alcuni elementi già completati, non esiste rollback automatico. Copie non garantiscono preservazione metadati e ACL. Testare ogni workflow e controllare l'EXE ottenuto dalla CI prima di usare il programma su file reali.
+
+
+## Restyling dopo v0.9.0 — collaudo GUI da eseguire
+- [ ] Avvio con Windows in tema chiaro e preferenza Veldir scura: nessun testo scuro o pulsante bianco.
+- [ ] Alternare tema chiaro/scuro, riavviare e verificare persistenza, menu, dialoghi, ricerca e anteprima.
+- [ ] Verificare contrasto di righe alternate, hover, selezione singola/multipla e finestra inattiva.
+- [ ] A 900, 1230 e 1920 pixel, DPI 100/125/150/200%, verificare barra a tutta larghezza e comandi accessibili.
+- [ ] Nomi lunghi troncati, tooltip completo, colonne allineate; due pannelli e divisore ai limiti.
+- [ ] Icone Shell nitide e trasparenti; miniature con proporzioni corrette, fallback senza simboli mancanti.
+- [ ] Doppio clic, selezione Ctrl/Maiusc, menu contestuale e trascinamento fra pannelli dopo il nuovo hit target di riga.
+La CI verifica compilazione e test; queste verifiche visive e di interazione richiedono una sessione Windows reale.
+
+
+## Verifiche aggiunte per i due pannelli
+- Rendering automatico dell'interfaccia completa a 900/1230/1920 punti, tema chiaro e scuro, divisore 25/50/75%: nessuna sovrapposizione o crescita oltre il viewport.
+- Input sintetico F6 e Ctrl+A: cambio pannello e selezione dei soli file filtrati nel pannello attivo.
+- Correzione: rettangoli dei pannelli riservati prima del rendering, clipping separato e campo filtro adattivo.
+- Tentativo GUI sul computer locale: la finestra viene individuata, ma la cattura restituisce "FrameArrived timed out" e, dopo recupero, "window capture timed out". Nessuna interazione GUI certificata da questo tentativo.
+- Da completare manualmente: trascinamento del divisore, clic sulle righe, Ctrl/Maiusc, menu contestuale, doppio clic, trascinamento fra pannelli e DPI 125/150/200%.

@@ -12,6 +12,88 @@ use std::time::{Instant,Duration,SystemTime};
 const ACCENT: Color32 = Color32::from_rgb(112, 175, 250);
 const TEXT_MUTED: Color32 = Color32::from_rgb(144, 155, 171);
 
+
+/// Configure both egui theme slots: the native system preference must not
+/// mix light widgets with the application's persisted dark surfaces.
+fn apply_theme(ctx: &egui::Context, dark: bool) {
+    ctx.set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        ctx.style_mut_of(theme, |style| {
+            style.visuals = if theme == egui::Theme::Dark {
+                let mut v = egui::Visuals::dark();
+                v.override_text_color = Some(Color32::from_rgb(228, 234, 243));
+                v.panel_fill = Color32::from_rgb(19, 24, 32);
+                v.window_fill = Color32::from_rgb(28, 34, 44);
+                v.extreme_bg_color = Color32::from_rgb(15, 20, 28);
+                v.selection.bg_fill = Color32::from_rgb(42, 79, 119);
+                v.selection.stroke = egui::Stroke::new(1.0, Color32::WHITE);
+                for (widget, fill) in [
+                    (&mut v.widgets.inactive, Color32::from_rgb(34, 43, 56)),
+                    (&mut v.widgets.hovered, Color32::from_rgb(49, 63, 81)),
+                    (&mut v.widgets.active, Color32::from_rgb(42, 79, 119)),
+                ] {
+                    widget.bg_fill = fill;
+                    widget.weak_bg_fill = fill;
+                    widget.fg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(228, 234, 243));
+                    widget.corner_radius = egui::CornerRadius::same(5);
+                }
+                v
+            } else { egui::Visuals::light() };
+            style.spacing.item_spacing = egui::vec2(7.0, 5.0);
+            style.spacing.button_padding = egui::vec2(10.0, 6.0);
+        });
+    }
+}
+
+
+/// Manual header cells avoid grow atoms consuming the entire remaining pane.
+fn file_header_ui(
+    ui: &mut egui::Ui, width: f32, compact: bool, by: SortBy, descending: bool,
+) -> Option<SortBy> {
+    let widths = column_widths(width, compact);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 26.0), egui::Sense::hover());
+    let mut x = rect.left();
+    let mut sort = None;
+    for (index, label, key) in [
+        (0, "NOME", Some(SortBy::Name)), (1, "TIPO", None),
+        (2, "DIMENSIONE", Some(SortBy::Size)), (3, "MODIFICATO", Some(SortBy::Modified)),
+    ] {
+        let cell_width = widths[index];
+        if cell_width == 0.0 { continue; }
+        let cell = egui::Rect::from_min_size(egui::pos2(x, rect.top()),
+            egui::vec2(cell_width, rect.height()));
+        let caption = if key == Some(by) {
+            format!("{label} {}", if descending { "v" } else { "^" })
+        } else { label.to_owned() };
+        let response = ui.interact(cell, ui.scope_id().with(("column_header", index)),
+            if key.is_some() { egui::Sense::click() } else { egui::Sense::hover() });
+        if response.hovered() && key.is_some() {
+            ui.painter().rect_filled(cell, egui::CornerRadius::same(3),
+                ui.visuals().widgets.hovered.weak_bg_fill);
+        }
+        ui.painter().with_clip_rect(cell.intersect(ui.clip_rect())).text(
+            egui::pos2(cell.left() + 8.0, cell.center().y),
+            egui::Align2::LEFT_CENTER, caption, egui::FontId::proportional(11.0),
+            ui.visuals().text_color());
+        if response.on_hover_text(format!("Ordina per {}", label.to_lowercase())).clicked() {
+            sort = key;
+        }
+        x += cell_width + 7.0;
+    }
+    sort
+}
+
+fn column_widths(width: f32, compact: bool) -> [f32; 4] {
+    let usable = (width - 24.0).max(180.0);
+    if compact { [usable - 80.0, 0.0, 80.0, 0.0] }
+    else {
+        let kind = (usable * 0.16).clamp(72.0, 150.0);
+        let size = (usable * 0.13).clamp(80.0, 110.0);
+        let date = 145.0;
+        [ (usable - kind - size - date).max(100.0), kind, size, date ]
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct Saved {
@@ -178,28 +260,15 @@ pub struct Veldir {
 
 impl Veldir {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let mut visual = egui::Visuals::dark();
-        visual.panel_fill = Color32::from_rgb(19, 24, 32);
-        visual.window_fill = Color32::from_rgb(28, 34, 44);
-        visual.extreme_bg_color = Color32::from_rgb(13, 18, 26);
-        visual.selection.bg_fill = Color32::from_rgb(50, 86, 127);
-        visual.hyperlink_color = ACCENT;
-        visual.widgets.inactive.corner_radius = egui::CornerRadius::same(7);
-        visual.widgets.hovered.corner_radius = egui::CornerRadius::same(7);
-        visual.widgets.active.corner_radius = egui::CornerRadius::same(7);
-        visual.widgets.inactive.weak_bg_fill = Color32::from_rgb(34, 42, 54);
-        visual.widgets.hovered.weak_bg_fill = Color32::from_rgb(47, 59, 74);
-        cc.egui_ctx.set_visuals(visual);
-        cc.egui_ctx.style_mut_of(egui::Theme::Dark, |style| {
-            style.spacing.item_spacing = egui::vec2(7.0, 6.0);
-            style.spacing.button_padding = egui::vec2(10.0, 5.0);
-        });
-
         let saved: Saved = cc.storage.and_then(|s| eframe::get_value(s, "veldir_state"))
             .unwrap_or_default();
+        Self::from_saved(cc.egui_ctx.clone(), saved)
+    }
+
+    fn from_saved(context: egui::Context, saved: Saved) -> Self {
         let (tx, rx) = mpsc::channel();
         let watch_tx=tx.clone();
-        let watch_ctx=cc.egui_ctx.clone();
+        let watch_ctx=context.clone();
         let watcher=folder_watch::FolderWatcher::start(move |path| {
             let _=watch_tx.send(Message::WatchedPath(path));
             watch_ctx.request_repaint();
@@ -223,7 +292,7 @@ impl Veldir {
 
         let mut app = Self {
             tabs: Vec::new(), active: 0, secondary: None, focused_right: false,
-            next_id: 1, tx, rx, context: cc.egui_ctx.clone(),
+            next_id: 1, tx, rx, context: context.clone(),
             favorites: saved.favorites, shortcuts, drives,
             clipboard: None, drag_intent: None,
             busy: false, dialog: Dialog::None,
@@ -246,7 +315,7 @@ impl Veldir {
             watcher,watched_paths:Vec::new(),watch_dirty:HashMap::new(),
             live_refresh:saved.live_refresh,
         };
-        if !app.dark_theme { cc.egui_ctx.set_visuals(egui::Visuals::light()); }
+        apply_theme(&context, app.dark_theme);
         let restored: Vec<PathBuf> = saved.tabs.into_iter().filter(|p| p.is_dir()).take(12).collect();
         if restored.is_empty() {
             app.add_tab(home);
@@ -977,8 +1046,8 @@ impl Veldir {
                     .inner_margin(egui::Margin::symmetric(7,3)).show(ui,|ui|{
                     ui.horizontal(|ui|{
                         let caption=if selected {
-                            RichText::new(format!("▣  {title}")).strong()
-                        }else {RichText::new(format!("▧  {title}"))};
+                            RichText::new(format!("{title}")).strong()
+                        }else {RichText::new(format!("{title}"))};
                         if ui.add(egui::Button::new(caption).frame(false))
                             .on_hover_text(tab.path.display().to_string()).clicked(){
                             switch=Some(i);
@@ -988,7 +1057,7 @@ impl Veldir {
                     });
                 });
             }
-            if ui.button("＋").on_hover_text("Nuova scheda · Ctrl+T").clicked(){
+            if ui.button("+").on_hover_text("Nuova scheda · Ctrl+T").clicked(){
                 switch=Some(usize::MAX);
             }
         });
@@ -1037,17 +1106,18 @@ impl Veldir {
             .corner_radius(egui::CornerRadius::same(11))
             .inner_margin(egui::Margin::symmetric(10,9))
             .show(ui,|ui|{
+            ui.set_min_width(ui.available_width());
             ui.horizontal(|ui|{
                 if ui.add_enabled(!self.current().back.is_empty(),
-                    egui::Button::new("←")).on_hover_text("Indietro · Alt+←").clicked(){
+                    egui::Button::new("<")).on_hover_text("Indietro · Alt+←").clicked(){
                     self.history_back();
                 }
                 if ui.add_enabled(!self.current().forward.is_empty(),
-                    egui::Button::new("→")).on_hover_text("Avanti · Alt+→").clicked(){
+                    egui::Button::new(">")).on_hover_text("Avanti · Alt+→").clicked(){
                     self.history_forward();
                 }
-                if ui.button("↑").on_hover_text("Cartella superiore").clicked(){self.up();}
-                if ui.button("⟳").on_hover_text("Aggiorna · F5").clicked(){self.refresh();}
+                if ui.button("Su").on_hover_text("Cartella superiore").clicked(){self.up();}
+                if ui.button("Aggiorna").on_hover_text("Aggiorna · F5").clicked(){self.refresh();}
                 ui.separator();
                 if self.editing_address {
                     let response=ui.add(egui::TextEdit::singleline(&mut self.address_input)
@@ -1058,45 +1128,69 @@ impl Veldir {
                         self.navigate(PathBuf::from(self.address_input.trim()));
                     }
                 }else{
-                    if ui.small_button("⌁").on_hover_text("Modifica percorso · Ctrl+L").clicked(){
+                    if ui.small_button("Percorso").on_hover_text("Modifica percorso · Ctrl+L").clicked(){
                         self.editing_address=true;
                         self.address_input=self.current().path.display().to_string();
                     }
-                    self.breadcrumbs_ui(ui);
+                    egui::ScrollArea::horizontal().id_salt("breadcrumbs_scroll")
+                        .auto_shrink([false, true]).max_width(ui.available_width())
+                        .show(ui, |ui| self.breadcrumbs_ui(ui));
                 }
             });
             ui.add_space(5.0);
-            ui.horizontal_wrapped(|ui|{
-                if ui.button("＋ Nuova cartella").on_hover_text("Crea una cartella").clicked() && !self.busy{
+            ui.horizontal(|ui|{
+                if ui.button("+ Nuova cartella").on_hover_text("Crea una cartella").clicked() && !self.busy{
                     self.dialog=Dialog::NewFolder("Nuova cartella".into());
                 }
                 let selected=!self.selected().is_empty();
                 let one=self.selected_one().is_some();
                 let many=self.selected().len()>1;
-                if ui.add_enabled(!self.busy && selected,egui::Button::new("⧉ Copia"))
+                if ui.add_enabled(!self.busy && selected,egui::Button::new("Copia"))
                     .on_hover_text("Ctrl+C · copia anche in Esplora").clicked(){
                     self.clipboard_set(false);
                 }
                 if ui.add_enabled(!self.busy && self.clipboard.is_some(),
-                    egui::Button::new("▣ Incolla"))
+                    egui::Button::new("Incolla"))
                     .on_hover_text("Ctrl+V · clipboard interna").clicked(){self.paste();}
-                if ui.button("⌕ Cerca").on_hover_text("Ricerca ricorsiva · Ctrl+Maiusc+F").clicked(){
+                if ui.button("Cerca").on_hover_text("Ricerca ricorsiva · Ctrl+Maiusc+F").clicked(){
                     self.search_visible=true;
                     self.search_root=self.current().path.clone();
                     self.search_results.clear();
                 }
-                if ui.button(if self.preview_visible{"▤ Chiudi anteprima"}else{"▤ Anteprima"})
+                if ui.button(if self.preview_visible{"Chiudi anteprima"}else{"Anteprima"})
                     .on_hover_text("Immagini, PDF (testo), dettagli · F3").clicked(){
                     self.preview_visible=!self.preview_visible;
                     self.preview_request=None;
                 }
                 let dual=self.secondary.is_some();
-                if ui.button(if dual{"▣ Un pannello"}else{"▥ Due pannelli"})
+                if ui.button(if dual{"Un pannello"}else{"Due pannelli"})
                     .on_hover_text("Mostra o nascondi il secondo pannello").clicked(){
                     self.toggle_dual();
                 }
 
-                ui.menu_button("Operazioni ▾",|ui|{
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let favorite=self.favorites.contains(&self.current().path);
+                if ui.button(if favorite{"Preferito"}else{"Preferiti"})
+                    .on_hover_text("Aggiungi o rimuovi dai preferiti").clicked(){
+                    self.toggle_favorite();
+                }
+                ui.menu_button("Visualizza",|ui|{
+                    if ui.checkbox(&mut self.thumbs_visible,"Miniature immagini").changed(){
+                        ui.close();
+                    }
+                    if ui.checkbox(&mut self.sidebar_visible,"Barra laterale").changed(){
+                        ui.close();
+                    }
+                    if ui.checkbox(&mut self.live_refresh,"Aggiornamento automatico cartelle").changed(){
+                        ui.close();
+                    }
+                    let was_dark=self.dark_theme;
+                    if ui.checkbox(&mut self.dark_theme,"Tema scuro").changed(){ui.close();}
+                    if was_dark!=self.dark_theme{
+                        apply_theme(&self.context, self.dark_theme);
+                    }
+                });
+                ui.menu_button("Operazioni",|ui|{
                     if ui.add_enabled(!self.busy && one,egui::Button::new("Rinomina  ·  F2"))
                         .clicked(){self.prepare_rename();ui.close();}
                     if ui.add_enabled(!self.busy && many,egui::Button::new("Rinomina multipla"))
@@ -1131,29 +1225,7 @@ impl Veldir {
                     }
                 });
 
-                ui.menu_button("Visualizza ▾",|ui|{
-                    if ui.checkbox(&mut self.thumbs_visible,"Miniature immagini").changed(){
-                        ui.close();
-                    }
-                    if ui.checkbox(&mut self.sidebar_visible,"Barra laterale").changed(){
-                        ui.close();
-                    }
-                    if ui.checkbox(&mut self.live_refresh,"Aggiornamento automatico cartelle").changed(){
-                        ui.close();
-                    }
-                    let was_dark=self.dark_theme;
-                    if ui.checkbox(&mut self.dark_theme,"Tema scuro").changed(){ui.close();}
-                    if was_dark!=self.dark_theme{
-                        self.context.set_visuals(if self.dark_theme{
-                            egui::Visuals::dark()
-                        }else{egui::Visuals::light()});
-                    }
                 });
-                let favorite=self.favorites.contains(&self.current().path);
-                if ui.button(if favorite{"★"}else{"☆"})
-                    .on_hover_text("Aggiungi o rimuovi dai preferiti").clicked(){
-                    self.toggle_favorite();
-                }
             });
         });
     }
@@ -1166,7 +1238,7 @@ impl Veldir {
         let mut target = None;
         for (name, path) in &self.shortcuts {
             if ui.add_sized([190.0, 27.0], egui::Button::new(format!("  {name}"))
-                .selected(&self.current().path == path)).clicked() { target = Some(path.clone()); }
+                .shortcut_text("").frame(false).selected(&self.current().path == path)).clicked() { target = Some(path.clone()); }
         }
         ui.add_space(15.0);
         ui.label(RichText::new("PREFERITI").color(TEXT_MUTED).small().strong());
@@ -1174,16 +1246,16 @@ impl Veldir {
         for path in &self.favorites {
             let title = path.file_name().and_then(|s| s.to_str())
                 .map(str::to_owned).unwrap_or_else(|| path.display().to_string());
-            if ui.add_sized([190.0, 27.0], egui::Button::new(format!("  ★  {title}"))
-                .selected(&self.current().path == path))
+            if ui.add_sized([190.0, 27.0], egui::Button::new(format!("  {title}"))
+                .shortcut_text("").frame(false).selected(&self.current().path == path))
                 .on_hover_text(path.display().to_string()).clicked() { target = Some(path.clone()); }
         }
         ui.add_space(15.0);
         ui.label(RichText::new("UNITÀ").color(TEXT_MUTED).small().strong());
         ui.add_space(4.0);
         for drive in &self.drives {
-            if ui.add_sized([190.0, 27.0], egui::Button::new(format!("  ◈  {}", drive.display()))
-                .selected(&self.current().path == drive)).clicked() { target = Some(drive.clone()); }
+            if ui.add_sized([190.0, 27.0], egui::Button::new(format!("  {}", drive.display()))
+                .shortcut_text("").frame(false).selected(&self.current().path == drive)).clicked() { target = Some(drive.clone()); }
         }
         if let Some(path) = target { self.navigate(path); }
     }
@@ -1193,7 +1265,7 @@ impl Veldir {
         let mut click = None;
         let mut drag_start: Option<PathBuf> = None;
         let mut menu_action: Option<(&'static str,PathBuf)> = None;
-        let mut requested_sort = None;
+        let requested_sort;
         let mut thumbnails_needed = Vec::new();
         let mut icons_needed = Vec::new();
         let tab = self.panel(right);
@@ -1204,53 +1276,23 @@ impl Veldir {
             .filter(|(_, item)| filters::matches(item,&filter,criteria,now))
             .map(|(i, _)| i).collect();
         let count = indices.len();
-        let dual = self.secondary.is_some();
-        let width = ui.available_width().max(if dual { 250.0 } else { 420.0 });
-        let w_name = if dual { (width * 0.66).max(130.0) } else { (width * 0.55).max(200.0) };
-        let w_type = (width * 0.17).max(80.0);
-        let w_size = if dual { (width * 0.26).max(70.0) } else { (width * 0.11).max(75.0) };
-        let heading = |by: SortBy, label: &str| -> String {
-            if tab.sort_by == by {
-                format!("{label} {}", if tab.descending { "↓" } else { "↑" })
-            } else { label.to_owned() }
-        };
-        ui.horizontal(|ui| {
-            if ui.add_sized([w_name, 24.0], egui::Button::new(
-                RichText::new(heading(SortBy::Name, "NOME")).small().color(TEXT_MUTED).strong())
-                .frame(false)).on_hover_text("Ordina per nome").clicked() {
-                requested_sort = Some(SortBy::Name);
-            }
-            if !dual { ui.add_sized([w_type, 24.0], egui::Label::new(RichText::new("TIPO").small().color(TEXT_MUTED).strong())); }
-            if ui.add_sized([w_size, 24.0], egui::Button::new(
-                RichText::new(heading(SortBy::Size, "DIMENSIONE")).small().color(TEXT_MUTED).strong())
-                .frame(false)).on_hover_text("Ordina per dimensione").clicked() {
-                requested_sort = Some(SortBy::Size);
-            }
-            if !dual && ui.add(egui::Button::new(
-                RichText::new(heading(SortBy::Modified, "MODIFICATO")).small().color(TEXT_MUTED).strong())
-                .frame(false)).on_hover_text("Ordina per data").clicked() {
-                requested_sort = Some(SortBy::Modified);
-            }
-        });
+        // Egui children may grow beyond their requested size. Bound the table
+        // to the visible viewport, not to an already-expanded child max_rect.
+        let table_width = ui.available_width()
+            .min((ui.clip_rect().right() - ui.next_widget_position().x).max(0.0));
+        let dual = self.secondary.is_some() || table_width < 650.0;
+        let [w_name, w_type, w_size, _w_date] = column_widths(table_width, dual);
+        requested_sort = file_header_ui(ui, table_width, dual, tab.sort_by, tab.descending);
         ui.separator();
         if tab.loading { ui.horizontal(|ui| { ui.spinner(); ui.label("Caricamento cartella..."); }); return; }
         if let Some(e) = &tab.error { ui.colored_label(Color32::LIGHT_RED, e); return; }
         if count == 0 { ui.add_space(18.0); ui.label("Nessun elemento trovato"); return; }
         egui::ScrollArea::vertical().auto_shrink([false, false])
             .id_salt(("rows", tab.id, tab.generation))
-            .show_rows(ui, 37.0, count, |ui, range| {
+            .show_rows(ui, 34.0, count, |ui, range| {
                 for row in range {
                     let item = &tab.entries[indices[row]];
                     let selected = tab.selected.contains(&item.path);
-                    let extension = item.path.extension().and_then(|s|s.to_str())
-                        .unwrap_or("").to_ascii_lowercase();
-                    let symbol = if item.is_dir { "▣" } else { match extension.as_str() {
-                        "pdf" => "▧", "doc" | "docx" | "txt" | "md" => "▤",
-                        "xls" | "xlsx" | "csv" => "▥",
-                        "jpg" | "jpeg" | "png" | "webp" | "gif" => "▨",
-                        "zip" | "7z" | "rar" => "▦",
-                        "exe" | "msi" => "◈", _ => "▫",
-                    }};
                     let name = item.name.clone();
                     let key = native_icons::key(&item.name,item.is_dir);
                     if !self.icon_cache.contains_key(&key)
@@ -1278,23 +1320,51 @@ impl Veldir {
                         let d: DateTime<Local> = DateTime::from(t);
                         d.format("%d/%m/%Y %H:%M").to_string()
                     }).unwrap_or_else(|| "—".into());
-                    let response = ui.horizontal(|ui| {
-                        if let Some(tex)=icon {
-                            ui.add_sized([32.0,32.0],egui::Image::new(tex)
-                                .fit_to_exact_size(egui::vec2(28.0,28.0)));
-                        } else {
-                            ui.add_sized([32.0,32.0],egui::Label::new(
-                                RichText::new(symbol).color(ACCENT)));
-                        }
-                        let r = ui.add_sized([(w_name-35.0).max(75.0), 32.0],
-                            egui::Button::new(name)
-                                .sense(egui::Sense::click_and_drag())
-                                .selected(selected).frame(selected));
-                        if !dual { ui.add_sized([w_type, 25.0], egui::Label::new(file_type)); }
-                        ui.add_sized([w_size, 25.0], egui::Label::new(size));
-                        if !dual { ui.label(RichText::new(modified).color(TEXT_MUTED).small()); }
-                        r
-                    }).inner.on_hover_text(item.path.display().to_string());
+                    let (rect, response) = ui.allocate_exact_size(
+                        egui::vec2(table_width.min(ui.available_width()), 34.0), egui::Sense::click_and_drag());
+                    let fill = if selected { ui.visuals().selection.bg_fill }
+                        else if response.hovered() { ui.visuals().widgets.hovered.weak_bg_fill }
+                        else if row % 2 == 0 { ui.visuals().faint_bg_color }
+                        else { ui.visuals().panel_fill };
+                    ui.painter().rect_filled(rect, egui::CornerRadius::same(4), fill);
+                    let text = ui.visuals().text_color();
+                    let left = rect.left() + 8.0;
+                    let center = rect.center().y;
+                    let icon_rect = egui::Rect::from_center_size(
+                        egui::pos2(left + 10.0, center), egui::vec2(20.0, 20.0));
+                    if let Some(tex) = icon {
+                        let aspect = tex.size_vec2();
+                        let scale = (20.0 / aspect.x).min(20.0 / aspect.y);
+                        let fitted = egui::Rect::from_center_size(icon_rect.center(), aspect * scale);
+                        ui.painter().image(tex.id(), fitted,
+                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                            Color32::WHITE);
+                    } else {
+                        // Vector fallback has no dependency on Unicode font coverage.
+                        ui.painter().rect_filled(icon_rect.shrink(2.0),
+                            egui::CornerRadius::same(2),
+                            if item.is_dir { Color32::from_rgb(226, 181, 77) } else { ACCENT });
+                    }
+                    let mut name_job = egui::text::LayoutJob::simple(name,
+                        egui::FontId::proportional(14.0), text, (w_name - 40.0).max(30.0));
+                    name_job.wrap.max_rows = 1;
+                    let galley = ui.fonts_mut(|f| f.layout_job(name_job));
+                    ui.painter().galley(egui::pos2(left + 30.0, center - galley.size().y / 2.0),
+                        galley, text);
+                    let mut x = rect.left() + w_name + 7.0;
+                    if !dual {
+                        ui.painter().text(egui::pos2(x, center), egui::Align2::LEFT_CENTER,
+                            file_type, egui::FontId::proportional(13.0), text);
+                        x += w_type + 7.0;
+                    }
+                    ui.painter().text(egui::pos2(x + w_size - 8.0, center),
+                        egui::Align2::RIGHT_CENTER, size, egui::FontId::proportional(13.0), text);
+                    if !dual {
+                        x += w_size + 7.0;
+                        ui.painter().text(egui::pos2(x, center), egui::Align2::LEFT_CENTER,
+                            modified, egui::FontId::proportional(12.0), text);
+                    }
+                    let response = response.on_hover_text(item.path.display().to_string());
                     response.context_menu(|ui| {
                         ui.label(RichText::new(&item.name).strong());
                         ui.separator();
@@ -1380,6 +1450,20 @@ impl Veldir {
         self.status="Trascinamento annullato (nessuna modifica)".into();
     }
 
+
+    /// Reserve the pane in the parent before rendering its child. Widgets in
+    /// one pane cannot grow the other pane or paint beyond the divider.
+    fn allocate_pane(&mut self, ui: &mut egui::Ui, width: f32, height: f32, right: bool) -> egui::Rect {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+        let mut child = ui.new_child(egui::UiBuilder::new()
+            .id_salt(("file_pane", right))
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)));
+        child.set_clip_rect(rect.intersect(ui.clip_rect()));
+        self.pane_ui(&mut child, right);
+        rect
+    }
+
     fn pane_ui(&mut self, ui: &mut egui::Ui, right: bool) {
         let tab = self.panel(right);
         let path = tab.path.display().to_string();
@@ -1394,7 +1478,7 @@ impl Veldir {
             .corner_radius(egui::CornerRadius::same(9))
             .inner_margin(egui::Margin::symmetric(10,7)).show(ui,|ui|{
             ui.horizontal(|ui|{
-                if ui.add(egui::Button::new(RichText::new(format!("▣  {title}")).strong()
+                if ui.add(egui::Button::new(RichText::new(format!("{title}")).strong()
                     .color(if focused{ACCENT}else{TEXT_MUTED}))
                     .frame(false)).on_hover_text("Attiva il pannello").clicked() {
                     self.focus(right);
@@ -1402,11 +1486,11 @@ impl Veldir {
                 if focused {ui.label(RichText::new("ATTIVO").small().color(ACCENT));}
                 ui.label(RichText::new(format!("{count} selezionati")).small().color(TEXT_MUTED));
             });
-            ui.label(RichText::new(path).small().color(TEXT_MUTED));
+            ui.label(RichText::new(&path).small().color(TEXT_MUTED)).on_hover_text(path.clone());
         });
         ui.horizontal(|ui| {
             ui.label(RichText::new("Filtra").color(TEXT_MUTED));
-            let filter_width = if self.secondary.is_some() { 170.0 } else { 260.0 };
+            let filter_width = (ui.available_width() - 80.0).clamp(55.0, 260.0);
             let tab = self.panel_mut(right);
             let changed = ui.add(egui::TextEdit::singleline(&mut tab.filter)
                 .id(egui::Id::unique(if right { "folder_filter_right" } else { "folder_filter" }))
@@ -1631,8 +1715,9 @@ impl Veldir {
     }
 }
 
-impl eframe::App for Veldir {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+impl Veldir {
+    fn render_ui(&mut self, ui: &mut egui::Ui) -> [Option<egui::Rect>; 2] {
+        ui.painter().rect_filled(ui.max_rect(), egui::CornerRadius::ZERO, ui.visuals().panel_fill);
         self.pump();
         self.sync_watch_paths();
         self.apply_watch_changes(ui.ctx());
@@ -1646,7 +1731,7 @@ impl eframe::App for Veldir {
             .corner_radius(egui::CornerRadius::same(11))
             .inner_margin(egui::Margin::symmetric(12,9)).show(ui,|ui|{
             ui.horizontal(|ui|{
-                ui.label(RichText::new("◈  VELDIR").strong().size(21.0).color(ACCENT));
+                ui.label(RichText::new("VELDIR").strong().size(21.0).color(ACCENT));
                 ui.label(RichText::new("0.9.0  ·  WINDOWS FILE MANAGER")
                     .small().color(TEXT_MUTED));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
@@ -1654,7 +1739,7 @@ impl eframe::App for Veldir {
                     let path=self.current().path.clone();
                     let label=path.file_name().and_then(|n|n.to_str())
                         .unwrap_or("Unità");
-                    ui.label(RichText::new(label).strong().color(TEXT_MUTED))
+                    ui.add(egui::Label::new(RichText::new(label).strong().color(TEXT_MUTED)).truncate())
                         .on_hover_text(path.display().to_string());
                 });
             });
@@ -1678,15 +1763,10 @@ impl eframe::App for Veldir {
                 }
                 if self.secondary.is_some() {
                     let available = ui.available_width().max(470.0);
-                    let usable = (available - 12.0).max(450.0);
+                    let usable = (available - 10.0 - 2.0 * ui.spacing().item_spacing.x).max(440.0);
                     let left_width = (usable * self.split_ratio).clamp(220.0, usable - 220.0);
                     let right_width = usable - left_width;
-                    let left = ui.allocate_ui_with_layout(
-                        egui::vec2(left_width, content_height),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| { ui.set_width(left_width); self.pane_ui(ui, false); },
-                    );
-                    pane_areas[0] = Some(left.response.rect);
+                    pane_areas[0] = Some(self.allocate_pane(ui, left_width, content_height, false));
 
                     // A draggable splitter, persisting its relative width across launches.
                     let (rect, splitter) = ui.allocate_exact_size(
@@ -1706,20 +1786,10 @@ impl eframe::App for Veldir {
                         ui.ctx().request_repaint();
                     }
 
-                    let right = ui.allocate_ui_with_layout(
-                        egui::vec2(right_width, content_height),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| { ui.set_width(right_width); self.pane_ui(ui, true); },
-                    );
-                    pane_areas[1] = Some(right.response.rect);
+                    pane_areas[1] = Some(self.allocate_pane(ui, right_width, content_height, true));
                 } else {
-                    let width = ui.available_width().max(400.0);
-                    let left = ui.allocate_ui_with_layout(
-                        egui::vec2(width, content_height),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| { ui.set_width(width); self.pane_ui(ui, false); },
-                    );
-                    pane_areas[0] = Some(left.response.rect);
+                    let width = ui.available_width();
+                    pane_areas[0] = Some(self.allocate_pane(ui, width, content_height, false));
                 }
             },
         );
@@ -1775,6 +1845,14 @@ impl eframe::App for Veldir {
         self.dialog_ui(ui.ctx());
         self.search_ui(ui.ctx());
         self.preview_ui(ui.ctx());
+        pane_areas
+    }
+
+}
+
+impl eframe::App for Veldir {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.render_ui(ui);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -1839,9 +1917,144 @@ fn pretty_bytes(n: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_selection, pretty_bytes, bounded_split_ratio, sort_entries, Saved, SortBy};
+    use super::{apply_theme, column_widths, file_header_ui, egui, Veldir, apply_selection, pretty_bytes, bounded_split_ratio, sort_entries, Saved, SortBy};
     use crate::fs_ops::Entry;
     use std::{collections::BTreeSet, path::PathBuf};
+
+
+
+    #[test]
+    fn full_ui_keeps_both_panes_inside_viewport_at_split_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("cartella-con-un-nome-lungo-per-verificare-il-layout-dei-pannelli");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("nota.txt"), "prova").unwrap();
+        for dark in [true, false] {
+            let ctx = egui::Context::default();
+            let mut app = Veldir::from_saved(ctx.clone(), Saved {
+                tabs: vec![folder.clone()], dual_pane: true,
+                secondary_path: Some(folder.clone()), dark_theme: dark,
+                thumbs_visible: false, live_refresh: false,
+                ..Default::default()
+            });
+            for width in [900.0, 1230.0, 1920.0] {
+                for ratio in [0.25, 0.5, 0.75] {
+                    app.split_ratio = ratio;
+                    let output = ctx.run_ui(egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO, egui::vec2(width, 790.0))),
+                        ..Default::default()
+                    }, |ui| {
+                        let viewport = ui.clip_rect();
+                        let panes = app.render_ui(ui);
+                        let left = panes[0].unwrap();
+                        let right = panes[1].unwrap();
+                        assert!(left.right() <= right.left(), "overlapping panes at {width}/{ratio}");
+                        assert!(right.right() <= viewport.right() + 1.0,
+                            "pane outside viewport at {width}/{ratio}: {right:?} vs {viewport:?}");
+                        assert!(ui.min_rect().right() <= viewport.right() + 1.0,
+                            "root grew past viewport at {width}/{ratio}");
+                        assert!(left.width() >= 219.0 && right.width() >= 219.0);
+                    });
+                    output.drop_without_applying_deltas();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn f6_switches_focus_and_ctrl_a_selects_only_filtered_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("nota.txt"), "prova").unwrap();
+        std::fs::write(dir.path().join("dati.csv"), "prova").unwrap();
+        let ctx = egui::Context::default();
+        let mut app = Veldir::from_saved(ctx.clone(), Saved {
+            tabs: vec![dir.path().to_path_buf()], dual_pane: true,
+            secondary_path: Some(dir.path().to_path_buf()),
+            live_refresh: false, thumbs_visible: false, ..Default::default()
+        });
+        let output = ctx.run_ui(egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::F6, physical_key: None, pressed: true,
+                repeat: false, modifiers: egui::Modifiers::NONE,
+            }], ..Default::default()
+        }, |ui| app.keyboard(ui.ctx()));
+        output.drop_without_applying_deltas();
+        assert!(app.focused_right);
+        // Wait-free setup after the asynchronous folder result is drained.
+        while app.rx.try_recv().is_ok() {}
+        let tab = app.current_mut();
+        tab.loading = false;
+        tab.entries = crate::fs_ops::list(dir.path()).unwrap();
+        tab.filter = "txt".into();
+        let modifiers = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
+        let output = ctx.run_ui(egui::RawInput {
+            events: vec![egui::Event::ModifiersChanged(modifiers), egui::Event::Key {
+                key: egui::Key::A, physical_key: None, pressed: true,
+                repeat: false, modifiers,
+            }], ..Default::default()
+        }, |ui| app.keyboard(ui.ctx()));
+        output.drop_without_applying_deltas();
+        assert_eq!(app.current().selected.len(), 1);
+        assert!(app.current().selected.contains(&dir.path().join("nota.txt")));
+        assert!(app.panel(false).selected.is_empty());
+    }
+
+    #[test]
+    fn theme_is_explicit_and_readable_in_both_system_modes() {
+        let ctx = egui::Context::default();
+        apply_theme(&ctx, true);
+        assert_eq!(ctx.theme(), egui::Theme::Dark);
+        let dark = ctx.style_of(egui::Theme::Dark);
+        assert!(dark.visuals.text_color().r() > 200);
+        assert!(dark.visuals.widgets.inactive.bg_fill.r() < 60);
+        apply_theme(&ctx, false);
+        assert_eq!(ctx.theme(), egui::Theme::Light);
+        apply_theme(&ctx, true);
+        assert_eq!(ctx.theme(), egui::Theme::Dark);
+    }
+
+
+    #[test]
+    fn header_stays_inside_viewport_even_when_parent_has_expanded() {
+        for width in [280.0, 450.0, 680.0, 1230.0, 1698.0] {
+            let ctx = egui::Context::default();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO, egui::vec2(width, 500.0))),
+                ..Default::default()
+            };
+            let output = ctx.run_ui(input, |ui| {
+                let viewport = ui.clip_rect();
+                // Reproduce an expanded child left by a wide widget.
+                ui.set_width(width + 300.0);
+                let visible = ui.available_width()
+                    .min((ui.clip_rect().right() - ui.next_widget_position().x).max(0.0));
+                let before = ui.next_widget_position();
+                file_header_ui(ui, visible, visible < 650.0, SortBy::Name, false);
+                let header = egui::Rect::from_min_size(before, egui::vec2(visible, 26.0));
+                assert!(header.right() <= viewport.right() + 0.1);
+                assert!(header.bottom() <= viewport.bottom());
+                let columns = column_widths(visible, visible < 650.0);
+                let count = columns.iter().filter(|w| **w > 0.0).count();
+                let last_edge = header.left() + columns.iter().sum::<f32>()
+                    + 7.0 * (count.saturating_sub(1) as f32);
+                assert!(last_edge <= viewport.right() + 0.1);
+            });
+            output.drop_without_applying_deltas();
+        }
+    }
+
+    #[test]
+    fn columns_fit_wide_and_compact_panes() {
+        for width in [250.0, 400.0, 650.0, 1200.0, 1900.0] {
+            let compact = width < 650.0;
+            let cols = column_widths(width, compact);
+            assert!(cols.iter().all(|w| *w >= 0.0));
+            assert!(cols.iter().sum::<f32>() + 24.0 <= width + 0.1);
+            if !compact { assert!(cols[3] <= 145.0); }
+        }
+    }
 
     #[test]
     fn sorting_keeps_folders_first_in_both_directions() {

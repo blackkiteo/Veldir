@@ -1,8 +1,32 @@
-# Veldir v0.9.0 — file manager leggero per Windows
+# Veldir 0.10.0-dev — avanzamento della roadmap
 
-Prototipo **open source MIT** in Rust + egui, ispirato alla filosofia di File Pilot, con codice e identità indipendenti. **Non affiliato a File Pilot.**
+Build di sviluppo. I criteri per la 1.0 sono in RELEASE_CHECKLIST.md e lo stato delle fasi in ROADMAP.md. Il collaudo GUI su hardware reale resta necessario.
 
-> **Stato reale:** fino alla v0.8.0 i controlli automatici Windows (check, test, build release, checksum) sono passati. La v0.9.0 deve superare gli stessi controlli. Il collaudo grafico e le operazioni con file reali restano da completare: provare solo su file di test.
+## Funzioni di questa integrazione
+- Colonne opzionali e ridimensionabili, preferenze salvate; metadati adattivi nel doppio pannello.
+- Frecce, Home/Fine/Pagina, Maiusc per selezione, ricerca digitando, Backspace e focus della riga.
+- Schede scorrevoli, elenco, duplicazione, riordino, apertura nel pannello opposto e riapertura con Ctrl+Maiusc+T.
+- Ripristino sessione attivabile; percorsi mancanti conservati con errore e Riprova.
+- Trasferimenti con conferma, politiche Interrompi/Salta/Conserva entrambi, nessuna sostituzione automatica. Operazioni recenti con riepiloghi, errori e risultati parziali.
+- Anteprima completa della rinomina multipla con conflitti verificati.
+- Ricerca con ambito modificabile, filtro/ordine risultati, annullamento e selezione del risultato nella cartella.
+- Zoom immagini e anteprima UTF-16 con BOM; cache limitate e risultati delle miniature invalidati dopo modifiche.
+- AccessKit attivato e righe etichettate; validazione con screen reader ancora da eseguire.
+- About con versione/build e scorciatoie; ZIP con checksum, lockfile e build CI ripetibile.
+
+## Avvio
+Estrarre lo ZIP ed eseguire veldir.exe. Con --portable le preferenze sono salvate nella cartella VeldirData accanto al programma; quella cartella deve essere scrivibile. Con --path CARTELLA si sceglie il percorso iniziale. Visualizza → Informazioni mostra build e scorciatoie.
+
+PDF: estratto testuale e apertura con il programma associato. Rendering pagine, menu Shell completo e firma digitale richiedono lavoro o strumenti ulteriori; non sono dichiarati completati. Gli spostamenti restano sullo stesso volume.
+
+## Verifica
+cargo fmt --all -- --check
+cargo check --locked --all-targets
+cargo test --locked --all-targets
+cargo test --locked benchmark_large_listing -- --ignored --nocapture
+cargo build --locked --release
+
+## Cronologia funzionale
 
 ## Novità v0.9.0 — Filtri avanzati e cartelle aggiornate in tempo reale
 

@@ -2,7 +2,11 @@
 
 Prototipo **open source MIT** in Rust + egui, ispirato alla filosofia di File Pilot, con codice e identità indipendenti. **Non affiliato a File Pilot.**
 
-> **Stato reale:** fino alla v0.8.0 i controlli automatici Windows (check, test, build release, checksum) sono passati. La v0.9.0 deve superare gli stessi controlli. Il collaudo grafico e le operazioni con file reali restano da completare: provare solo su file di test.
+> **Stato reale:** la v0.9.0 ha superato check, test e build release Windows. La PR #11 con le correzioni grafiche è integrata in `main`; la [PR #12](https://github.com/blackkiteo/Veldir/pull/12) contiene la v0.10.0-dev e ha superato 53 test MSVC, ma resta **draft** fino al [collaudo Windows](https://github.com/blackkiteo/Veldir/issues/13). Nessuna di queste prove automatiche sostituisce il test reale della GUI e delle operazioni sui file. Non usare build di sviluppo come unica copia di file importanti.
+
+## Contribuire e sicurezza
+
+Il codice è pubblico con [licenza MIT](LICENSE). Proposte e bug report sono benvenuti tramite issue e Pull Request: prima di proporre modifiche consulta la [checklist delle PR](.github/pull_request_template.md). Per vulnerabilità o credenziali non aprire issue pubbliche: segui [SECURITY.md](SECURITY.md). Le verifiche automatiche dei segreti non sono una garanzia assoluta di sicurezza.
 
 ## Novità v0.9.0 — Filtri avanzati e cartelle aggiornate in tempo reale
 

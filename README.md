@@ -1,8 +1,20 @@
-# Veldir v0.8.0 — file manager leggero per Windows
+# Veldir v0.9.0 — file manager leggero per Windows
 
 Prototipo **open source MIT** in Rust + egui, ispirato alla filosofia di File Pilot, con codice e identità indipendenti. **Non affiliato a File Pilot.**
 
-> **Stato reale:** fino alla v0.7.0 i controlli automatici Windows (check, test, build release, checksum) sono passati. La v0.8.0 deve superare gli stessi controlli. Il collaudo grafico e le operazioni con file reali restano da completare: provare solo su file di test.
+> **Stato reale:** fino alla v0.8.0 i controlli automatici Windows (check, test, build release, checksum) sono passati. La v0.9.0 deve superare gli stessi controlli. Il collaudo grafico e le operazioni con file reali restano da completare: provare solo su file di test.
+
+## Novità v0.9.0 — Filtri avanzati e cartelle aggiornate in tempo reale
+
+- **Filtri combinabili per pannello:** nome/estensione, tipo (Documenti, Immagini, Archivi, Video, Audio, Altri), dimensione (<1 MiB, 1–100 MiB, ≥100 MiB), data di modifica (24 ore, 7 giorni, 30 giorni).
+- **Cartelle sempre navigabili** anche quando sono selezionati filtri per tipo/dimensione/data. I filtri vengono calcolati localmente senza lettura del contenuto dei file.
+- **Selezione sicura:** modificando qualsiasi filtro, Veldir deseleziona i file; Ctrl+A seleziona soltanto gli elementi visibili. Il pulsante × azzera tutti i filtri.
+- **Rilevamento modifiche sul disco:** eventi nativi della libreria `notify` in background per le sole cartelle aperte; aggiornamento ritardato di almeno 450 ms per evitare raffiche di refresh.
+- **Preservazione della selezione durante il refresh automatico:** gli elementi ancora esistenti rimangono selezionati, quelli rimossi vengono deselezionati. Il caricamento non interrompe la visualizzazione della cartella.
+- **Preferenza attivabile/disattivabile:** menu Visualizza → Aggiornamento automatico cartelle. Predefinito attivo e memorizzato.
+- **Prestazioni:** monitoraggio non ricorsivo, nessuna scansione continua della cartella; nuovi test automatici per filtri e soglie.
+
+**Limitazioni:** su alcune condivisioni SMB e filesystem virtuali le notifiche native potrebbero non arrivare, perciò F5 resta disponibile. Il watcher segue i percorsi delle cartelle aperte, non le loro sottocartelle non aperte. Il rendering grafico PDF rimane da implementare.
 
 ## Novità v0.8.0 — Interfaccia più ordinata e PDF testuale
 
@@ -110,7 +122,7 @@ Lo script invoca `cargo fmt --all`, `cargo check --all-targets`, `cargo test --a
 
 ### GitHub Actions
 
-Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Windows Build** viene compilata la versione Windows e, se tutti i controlli passano, viene pubblicato come artefatto `Veldir-v0.8.0-Windows-x64` con l'EXE e il suo SHA-256. La build v0.2.0 è stata verificata nella CI; **il collaudo manuale dell'interfaccia resta necessario**.
+Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Windows Build** viene compilata la versione Windows e, se tutti i controlli passano, viene pubblicato come artefatto `Veldir-v0.9.0-Windows-x64` con l'EXE e il suo SHA-256. La build v0.2.0 è stata verificata nella CI; **il collaudo manuale dell'interfaccia resta necessario**.
 
 ## Scorciatoie
 

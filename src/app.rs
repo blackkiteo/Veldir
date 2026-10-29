@@ -1124,6 +1124,11 @@ impl Veldir {
                     self.toggle_dual();
                 }
 
+                // Keep view controls at the trailing edge on wide windows;
+                // wrapped layout keeps them reachable at the minimum size.
+                if ui.available_width() > 310.0 {
+                    ui.add_space(ui.available_width() - 300.0);
+                }
                 ui.menu_button("Operazioni",|ui|{
                     if ui.add_enabled(!self.busy && one,egui::Button::new("Rinomina  ·  F2"))
                         .clicked(){self.prepare_rename();ui.close();}
@@ -1305,7 +1310,10 @@ impl Veldir {
                     let icon_rect = egui::Rect::from_center_size(
                         egui::pos2(left + 10.0, center), egui::vec2(20.0, 20.0));
                     if let Some(tex) = icon {
-                        ui.painter().image(tex.id(), icon_rect,
+                        let aspect = tex.size_vec2();
+                        let scale = (20.0 / aspect.x).min(20.0 / aspect.y);
+                        let fitted = egui::Rect::from_center_size(icon_rect.center(), aspect * scale);
+                        ui.painter().image(tex.id(), fitted,
                             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                             Color32::WHITE);
                     } else {

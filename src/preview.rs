@@ -21,6 +21,17 @@ pub fn details(path: &Path) -> Result<Details, String> {
     let mut info = Details { path: path.to_owned(), kind, bytes: meta.len(), text: None, note: None };
     if !meta.is_file() { return Ok(info); }
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
+    if ext == "pdf" {
+        match crate::pdf_view::inspect(path) {
+            Ok(result) => {
+                info.kind = format!("PDF · {} pagine", result.pages);
+                info.text = result.excerpt;
+                info.note = Some(result.note);
+            }
+            Err(error) => info.note = Some(error),
+        }
+        return Ok(info);
+    }
     if !["txt","md","rs","json","csv","xml","toml","log","ini","yaml","yml","html","css","js","ts","py","ps1","bat"].contains(&ext.as_str()) {
         info.note = Some("Anteprima testuale non disponibile per questo formato".into());
         return Ok(info);

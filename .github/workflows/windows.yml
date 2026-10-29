@@ -39,6 +39,8 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item README.md target/release/README.md
+          Copy-Item LICENSE target/release/LICENSE
+          Copy-Item SECURITY.md target/release/SECURITY.md
           Copy-Item scripts/Veldir-portable.cmd target/release/Veldir-portable.cmd
           Copy-Item ROADMAP.md target/release/ROADMAP.md
           Copy-Item ARCHITECTURE_DECISIONS.md target/release/ARCHITECTURE_DECISIONS.md
@@ -56,6 +58,8 @@ jobs:
             target/release/SHA256SUMS.txt
             target/release/BUILD.txt
             target/release/README.md
+            target/release/LICENSE
+            target/release/SECURITY.md
             target/release/ROADMAP.md
             target/release/ARCHITECTURE_DECISIONS.md
             target/release/RELEASE_CHECKLIST.md

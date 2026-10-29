@@ -63,6 +63,12 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 | CLIP-05 | Seleziona una cartella in Veldir, «Verso Esplora», Incolla in Esplora | Copia della cartella con conferma Windows standard |
 | CLIP-06 | Usa Ctrl+X in Veldir, poi incolla in Esplora | Nessun taglio della sorgente: il taglio rimane interno a Veldir |
 | CLIP-07 | Chiudi e riapri Veldir dopo Ctrl+C, poi incolla in Esplora | La clipboard Windows dei percorsi rimane valida fino alla sostituzione del contenuto |
+| CLIP-08 | Seleziona un file in Veldir, Ctrl+C, cambia pannello/cartella e Ctrl+V | Compare conferma trasferimento, file copiato e sorgente integra |
+| CLIP-09 | Copia due file da Esplora con Ctrl+C e premi Ctrl+V in Veldir | Veldir riconosce CF_HDROP senza testo, richiede conferma e copia entrambi |
+| CLIP-10 | Copia una cartella con Ctrl+C da Veldir e incolla con Ctrl+V nella stessa directory | Conflitto mostrato; Interrompi non sovrascrive, Conserva entrambi crea nome distinto |
+| CLIP-11 | Con filtro percorso attivo digita testo, Ctrl+A, Ctrl+C e Ctrl+V | Opera sul testo del filtro, non sulla selezione dei file |
+| CLIP-12 | Copia file in Veldir, poi copia testo semplice in un'altra applicazione e Ctrl+V nel pannello | Nessun file vecchio incollato per errore; avviso clipboard senza file |
+| CLIP-13 | Ctrl+X in Veldir, Ctrl+V in un'altra cartella Veldir | Conferma dello spostamento, nessuna eliminazione prima della conferma |
 | DND-04 | Trascina da pannello sinistro al destro (cartelle di test) | Richiesta conferma e sola copia, originali intatti |
 | DND-05 | Seleziona più file, trascina uno dei selezionati al pannello opposto | Copia di tutti i file selezionati con conferma |
 | DND-06 | Rilascia un file sul pannello di origine o fuori dai pannelli | Nessuna copia o spostamento |

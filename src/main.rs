@@ -6,6 +6,7 @@ mod preview;
 mod shell_clipboard;
 mod image_view;
 mod native_icons;
+mod pdf_view;
 
 use eframe::egui;
 

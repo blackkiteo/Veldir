@@ -929,6 +929,7 @@ impl Veldir {
     fn files_ui(&mut self, ui: &mut egui::Ui, right: bool) {
         let mut open = None;
         let mut click = None;
+        let mut drag_start: Option<PathBuf> = None;
         let mut menu_action: Option<(&'static str,PathBuf)> = None;
         let mut requested_sort = None;
         let tab = self.panel(right);
@@ -995,6 +996,7 @@ impl Veldir {
                     }).unwrap_or_else(|| "—".into());
                     let response = ui.horizontal(|ui| {
                         let r = ui.add_sized([w_name, 25.0], egui::Button::new(name)
+                            .sense(egui::Sense::click_and_drag())
                             .selected(selected).frame(selected));
                         if !dual { ui.add_sized([w_type, 25.0], egui::Label::new(file_type)); }
                         ui.add_sized([w_size, 25.0], egui::Label::new(size));
@@ -1017,6 +1019,9 @@ impl Veldir {
                     if response.clicked() {
                         click = Some((item.path.clone(), ui.input(|i| i.modifiers)));
                     }
+                    if response.drag_started() {
+                        drag_start = Some(item.path.clone());
+                    }
                     if response.double_clicked() { open = Some(item.path.clone()); }
                 }
             });
@@ -1034,6 +1039,16 @@ impl Veldir {
             self.open_entry(path);
         }
         if let Some(by) = requested_sort { self.change_sort(right, by); }
+        if let Some(path) = drag_start {
+            if self.secondary.is_some() && !self.busy && matches!(self.dialog, Dialog::None) {
+                let tab = self.panel(right);
+                let sources: Vec<PathBuf> = if tab.selected.contains(&path) {
+                    tab.selected.iter().cloned().collect()
+                } else { vec![path] };
+                self.drag_intent = Some(DragIntent { sources, source_right: right });
+                self.status = "Rilascia nel pannello opposto per proporre una copia".into();
+            }
+        }
         if let Some((action,path)) = menu_action {
             self.focus(right);
             let tab=self.current_mut();
@@ -1049,6 +1064,27 @@ impl Veldir {
                 _ => {}
             }
         }
+    }
+
+    /// UI-only drag between panels. No OS file drop is synthesized: the
+    /// result always opens an explicit copy-only confirmation dialog.
+    fn finish_internal_drag(&mut self, ctx: &egui::Context, areas: [Option<egui::Rect>;2]) {
+        if !ctx.input(|i| i.pointer.any_released()) { return; }
+        let Some(drag)=self.drag_intent.take() else {return;};
+        if self.busy || !matches!(self.dialog, Dialog::None) { return; }
+        let Some(pos)=ctx.input(|i|i.pointer.interact_pos()) else {return;};
+        let target_right = !drag.source_right;
+        if let Some(area)=areas[usize::from(target_right)] {
+            if area.contains(pos) {
+                let destination=self.panel(target_right).path.clone();
+                self.dialog=Dialog::ExternalDrop {
+                    sources:drag.sources,
+                    destination,
+                };
+                return;
+            }
+        }
+        self.status="Trascinamento annullato (nessuna modifica)".into();
     }
 
     fn pane_ui(&mut self, ui: &mut egui::Ui, right: bool) {
@@ -1251,6 +1287,7 @@ impl eframe::App for Veldir {
         ui.add_space(10.0);
         ui.separator();
         let content_height = (ui.available_height() - 46.0).max(230.0);
+        let mut pane_areas: [Option<egui::Rect>;2] = [None,None];
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), content_height),
             egui::Layout::left_to_right(egui::Align::Min),
@@ -1265,11 +1302,12 @@ impl eframe::App for Veldir {
                     let usable = (available - 12.0).max(450.0);
                     let left_width = (usable * self.split_ratio).clamp(220.0, usable - 220.0);
                     let right_width = usable - left_width;
-                    ui.allocate_ui_with_layout(
+                    let left = ui.allocate_ui_with_layout(
                         egui::vec2(left_width, content_height),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| { ui.set_width(left_width); self.pane_ui(ui, false); },
                     );
+                    pane_areas[0] = Some(left.response.rect);
 
                     // A draggable splitter, persisting its relative width across launches.
                     let (rect, splitter) = ui.allocate_exact_size(
@@ -1289,21 +1327,24 @@ impl eframe::App for Veldir {
                         ui.ctx().request_repaint();
                     }
 
-                    ui.allocate_ui_with_layout(
+                    let right = ui.allocate_ui_with_layout(
                         egui::vec2(right_width, content_height),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| { ui.set_width(right_width); self.pane_ui(ui, true); },
                     );
+                    pane_areas[1] = Some(right.response.rect);
                 } else {
                     let width = ui.available_width().max(400.0);
-                    ui.allocate_ui_with_layout(
+                    let left = ui.allocate_ui_with_layout(
                         egui::vec2(width, content_height),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| { ui.set_width(width); self.pane_ui(ui, false); },
                     );
+                    pane_areas[0] = Some(left.response.rect);
                 }
             },
         );
+        self.finish_internal_drag(ui.ctx(),pane_areas);
         ui.separator();
         ui.horizontal(|ui| {
             let tab = self.current();

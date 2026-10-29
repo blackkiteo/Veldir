@@ -1,5 +1,5 @@
 use crate::fs_ops::{self, Entry, Job};
-use crate::{preview,search,image_view,native_icons};
+use crate::{preview,search,image_view,native_icons,filters,folder_watch};
 use chrono::{DateTime, Local};
 use eframe::egui::{self, Color32, RichText};
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,7 @@ use std::collections::{BTreeSet,HashMap,HashSet,VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc,atomic::{AtomicBool,Ordering}};
-use std::time::Instant;
+use std::time::{Instant,Duration,SystemTime};
 
 const ACCENT: Color32 = Color32::from_rgb(112, 175, 250);
 const TEXT_MUTED: Color32 = Color32::from_rgb(144, 155, 171);
@@ -25,6 +25,7 @@ struct Saved {
     dark_theme: bool,
     preview_visible: bool,
     thumbs_visible: bool,
+    live_refresh: bool,
 }
 
 impl Default for Saved {
@@ -35,6 +36,7 @@ impl Default for Saved {
             sidebar_visible: true, split_ratio: 0.5,
             dark_theme: true, preview_visible: false,
             thumbs_visible: true,
+            live_refresh: true,
         }
     }
 }
@@ -74,6 +76,7 @@ struct Tab {
     filter: String,
     sort_by: SortBy,
     descending: bool,
+    criteria: filters::Criteria,
 }
 
 impl Tab {
@@ -83,6 +86,7 @@ impl Tab {
             loading: false, generation: 0, error: None,
             selected: BTreeSet::new(), anchor: None, filter: String::new(),
             sort_by: SortBy::Name, descending: false,
+            criteria: filters::Criteria::default(),
         }
     }
 }
@@ -800,8 +804,10 @@ impl Veldir {
     fn select_all_visible(&mut self) {
         let tab = self.current_mut();
         let filter = tab.filter.to_lowercase();
+        let criteria = tab.criteria;
+        let now = SystemTime::now();
         tab.selected = tab.entries.iter().filter(|item|
-            filter.is_empty() || item.name.to_lowercase().contains(&filter))
+            filters::matches(item,&filter,criteria,now))
             .map(|item| item.path.clone()).collect();
         tab.anchor = None;
     }
@@ -1101,8 +1107,10 @@ impl Veldir {
         let mut icons_needed = Vec::new();
         let tab = self.panel(right);
         let filter = tab.filter.to_lowercase();
+        let now=SystemTime::now();
+        let criteria=tab.criteria;
         let indices: Vec<usize> = tab.entries.iter().enumerate()
-            .filter(|(_, item)| filter.is_empty() || item.name.to_lowercase().contains(&filter))
+            .filter(|(_, item)| filters::matches(item,&filter,criteria,now)
             .map(|(i, _)| i).collect();
         let count = indices.len();
         let dual = self.secondary.is_some();
@@ -1318,10 +1326,67 @@ impl Veldir {
                 tab.selected.clear();
                 tab.anchor = None;
             }
-            if ui.button("×").on_hover_text("Azzera filtro").clicked() {
+            if ui.button("×").on_hover_text("Azzera filtri").clicked() {
                 tab.filter.clear();
+                tab.criteria=filters::Criteria::default();
                 tab.selected.clear();
                 tab.anchor = None;
+            }
+        });
+        ui.horizontal_wrapped(|ui|{
+            let tab=self.panel_mut(right);
+            let previous=tab.criteria;
+            egui::ComboBox::from_id_salt(("kind_filter",right))
+                .selected_text(match tab.criteria.kind{
+                    filters::FileKind::All=>"Tutti i tipi",
+                    filters::FileKind::Documents=>"Documenti",
+                    filters::FileKind::Images=>"Immagini",
+                    filters::FileKind::Archives=>"Archivi",
+                    filters::FileKind::Video=>"Video",
+                    filters::FileKind::Audio=>"Audio",
+                    filters::FileKind::Other=>"Altri",
+                }).show_ui(ui,|ui|{
+                    for (kind,label) in [
+                        (filters::FileKind::All,"Tutti i tipi"),
+                        (filters::FileKind::Documents,"Documenti"),
+                        (filters::FileKind::Images,"Immagini"),
+                        (filters::FileKind::Archives,"Archivi"),
+                        (filters::FileKind::Video,"Video"),
+                        (filters::FileKind::Audio,"Audio"),
+                        (filters::FileKind::Other,"Altri"),
+                    ]{ui.selectable_value(&mut tab.criteria.kind,kind,label);}
+                });
+            egui::ComboBox::from_id_salt(("size_filter",right))
+                .selected_text(match tab.criteria.size{
+                    filters::SizeRange::All=>"Qualsiasi dimensione",
+                    filters::SizeRange::Small=>"< 1 MiB",
+                    filters::SizeRange::Medium=>"1–100 MiB",
+                    filters::SizeRange::Large=>">= 100 MiB",
+                }).show_ui(ui,|ui|{
+                    for (kind,label) in [
+                        (filters::SizeRange::All,"Qualsiasi dimensione"),
+                        (filters::SizeRange::Small,"< 1 MiB"),
+                        (filters::SizeRange::Medium,"1–100 MiB"),
+                        (filters::SizeRange::Large,">= 100 MiB"),
+                    ]{ui.selectable_value(&mut tab.criteria.size,kind,label);}
+                });
+            egui::ComboBox::from_id_salt(("date_filter",right))
+                .selected_text(match tab.criteria.modified{
+                    filters::ModifiedRange::All=>"Qualsiasi data",
+                    filters::ModifiedRange::Day=>"Ultime 24 ore",
+                    filters::ModifiedRange::Week=>"Ultimi 7 giorni",
+                    filters::ModifiedRange::Month=>"Ultimi 30 giorni",
+                }).show_ui(ui,|ui|{
+                    for (kind,label) in [
+                        (filters::ModifiedRange::All,"Qualsiasi data"),
+                        (filters::ModifiedRange::Day,"Ultime 24 ore"),
+                        (filters::ModifiedRange::Week,"Ultimi 7 giorni"),
+                        (filters::ModifiedRange::Month,"Ultimi 30 giorni"),
+                    ]{ui.selectable_value(&mut tab.criteria.modified,kind,label);}
+                });
+            if previous!=tab.criteria{
+                tab.selected.clear();
+                tab.anchor=None;
             }
         });
         ui.add_space(6.0);
@@ -1489,7 +1554,7 @@ impl eframe::App for Veldir {
             .inner_margin(egui::Margin::symmetric(12,9)).show(ui,|ui|{
             ui.horizontal(|ui|{
                 ui.label(RichText::new("◈  VELDIR").strong().size(21.0).color(ACCENT));
-                ui.label(RichText::new("0.8.0  ·  WINDOWS FILE MANAGER")
+                ui.label(RichText::new("0.9.0  ·  WINDOWS FILE MANAGER")
                     .small().color(TEXT_MUTED));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
                     if self.busy {ui.spinner();}
@@ -1569,8 +1634,10 @@ impl eframe::App for Veldir {
         ui.separator();
         ui.horizontal(|ui| {
             let tab = self.current();
-            let count = tab.entries.iter().filter(|e| tab.filter.is_empty() ||
-                e.name.to_lowercase().contains(&tab.filter.to_lowercase())).count();
+            let name_filter=tab.filter.to_lowercase();
+            let now=SystemTime::now();
+            let count = tab.entries.iter().filter(|e|
+                filters::matches(e,&name_filter,tab.criteria,now)).count();
             let bytes=tab.entries.iter().filter(|e| !e.is_dir && tab.selected.contains(&e.path))
                 .fold(0u64,|acc,e|acc.saturating_add(e.size));
             let selected_text=if tab.selected.is_empty() {

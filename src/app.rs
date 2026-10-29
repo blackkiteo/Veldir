@@ -35,6 +35,23 @@ fn bounded_split_ratio(value: f32) -> f32 {
     if value.is_finite() { value.clamp(0.25, 0.75) } else { 0.5 }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SortBy { Name, Size, Modified }
+
+fn sort_entries(entries: &mut [Entry], by: SortBy, descending: bool) {
+    entries.sort_unstable_by(|a, b| {
+        let order = match by {
+            SortBy::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            SortBy::Size => a.size.cmp(&b.size),
+            SortBy::Modified => a.modified.cmp(&b.modified),
+        };
+        let order = if descending { order.reverse() } else { order };
+        b.is_dir.cmp(&a.is_dir)
+            .then(order)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+}
+
 struct Tab {
     id: u64,
     path: PathBuf,
@@ -47,6 +64,8 @@ struct Tab {
     selected: BTreeSet<PathBuf>,
     anchor: Option<PathBuf>,
     filter: String,
+    sort_by: SortBy,
+    descending: bool,
 }
 
 impl Tab {
@@ -55,6 +74,7 @@ impl Tab {
             id, path, entries: Vec::new(), back: Vec::new(), forward: Vec::new(),
             loading: false, generation: 0, error: None,
             selected: BTreeSet::new(), anchor: None, filter: String::new(),
+            sort_by: SortBy::Name, descending: false,
         }
     }
 }
@@ -337,7 +357,11 @@ impl Veldir {
                     if let Some(tab) = tab {
                         tab.loading = false;
                         match result {
-                            Ok(entries) => { tab.entries = entries; tab.error = None; }
+                            Ok(mut entries) => {
+                                sort_entries(&mut entries, tab.sort_by, tab.descending);
+                                tab.entries = entries;
+                                tab.error = None;
+                            }
                             Err(e) => { tab.error = Some(e); }
                         }
                     }
@@ -440,6 +464,22 @@ impl Veldir {
         }
     }
 
+    fn change_sort(&mut self, right: bool, by: SortBy) {
+        let tab = self.panel_mut(right);
+        if tab.sort_by == by { tab.descending = !tab.descending; }
+        else { tab.sort_by = by; tab.descending = false; }
+        sort_entries(&mut tab.entries, tab.sort_by, tab.descending);
+    }
+
+    fn select_all_visible(&mut self) {
+        let tab = self.current_mut();
+        let filter = tab.filter.to_lowercase();
+        tab.selected = tab.entries.iter().filter(|item|
+            filter.is_empty() || item.name.to_lowercase().contains(&filter))
+            .map(|item| item.path.clone()).collect();
+        tab.anchor = None;
+    }
+
     fn toggle_favorite(&mut self) {
         let path = self.current().path.clone();
         if let Some(i) = self.favorites.iter().position(|p| p == &path) { self.favorites.remove(i); }
@@ -474,6 +514,11 @@ impl Veldir {
             if shortcut(egui::Key::C) { self.clipboard_set(false); }
             if shortcut(egui::Key::X) { self.clipboard_set(true); }
             if shortcut(egui::Key::V) { self.paste(); }
+            if shortcut(egui::Key::A) { self.select_all_visible(); }
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.current_mut().selected.clear();
+                self.current_mut().anchor = None;
+            }
             if ctx.input(|i| i.key_pressed(egui::Key::F2)) { self.prepare_rename(); }
             if ctx.input(|i| i.key_pressed(egui::Key::Delete)) { self.prepare_trash(); }
             if ctx.input(|i| i.key_pressed(egui::Key::Enter)) { self.open_selected(); }
@@ -631,6 +676,7 @@ impl Veldir {
     fn files_ui(&mut self, ui: &mut egui::Ui, right: bool) {
         let mut open = None;
         let mut click = None;
+        let mut requested_sort = None;
         let tab = self.panel(right);
         let filter = tab.filter.to_lowercase();
         let indices: Vec<usize> = tab.entries.iter().enumerate()
@@ -642,11 +688,28 @@ impl Veldir {
         let w_name = if dual { (width * 0.66).max(130.0) } else { (width * 0.55).max(200.0) };
         let w_type = (width * 0.17).max(80.0);
         let w_size = if dual { (width * 0.26).max(70.0) } else { (width * 0.11).max(75.0) };
+        let heading = |by: SortBy, label: &str| -> String {
+            if tab.sort_by == by {
+                format!("{label} {}", if tab.descending { "↓" } else { "↑" })
+            } else { label.to_owned() }
+        };
         ui.horizontal(|ui| {
-            ui.add_sized([w_name, 24.0], egui::Label::new(RichText::new("NOME").small().color(TEXT_MUTED).strong()));
+            if ui.add_sized([w_name, 24.0], egui::Button::new(
+                RichText::new(heading(SortBy::Name, "NOME")).small().color(TEXT_MUTED).strong())
+                .frame(false)).on_hover_text("Ordina per nome").clicked() {
+                requested_sort = Some(SortBy::Name);
+            }
             if !dual { ui.add_sized([w_type, 24.0], egui::Label::new(RichText::new("TIPO").small().color(TEXT_MUTED).strong())); }
-            ui.add_sized([w_size, 24.0], egui::Label::new(RichText::new("DIMENSIONE").small().color(TEXT_MUTED).strong()));
-            if !dual { ui.label(RichText::new("MODIFICATO").small().color(TEXT_MUTED).strong()); }
+            if ui.add_sized([w_size, 24.0], egui::Button::new(
+                RichText::new(heading(SortBy::Size, "DIMENSIONE")).small().color(TEXT_MUTED).strong())
+                .frame(false)).on_hover_text("Ordina per dimensione").clicked() {
+                requested_sort = Some(SortBy::Size);
+            }
+            if !dual && ui.add(egui::Button::new(
+                RichText::new(heading(SortBy::Modified, "MODIFICATO")).small().color(TEXT_MUTED).strong())
+                .frame(false)).on_hover_text("Ordina per data").clicked() {
+                requested_sort = Some(SortBy::Modified);
+            }
         });
         ui.separator();
         if tab.loading { ui.horizontal(|ui| { ui.spinner(); ui.label("Caricamento cartella..."); }); return; }
@@ -694,6 +757,7 @@ impl Veldir {
             self.focus(right);
             self.open_entry(path);
         }
+        if let Some(by) = requested_sort { self.change_sort(right, by); }
     }
 
     fn pane_ui(&mut self, ui: &mut egui::Ui, right: bool) {
@@ -986,8 +1050,25 @@ fn pretty_bytes(n: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_selection, pretty_bytes, bounded_split_ratio, Saved};
+    use super::{apply_selection, pretty_bytes, bounded_split_ratio, sort_entries, Saved, SortBy};
+    use crate::fs_ops::Entry;
     use std::{collections::BTreeSet, path::PathBuf};
+
+    #[test]
+    fn sorting_keeps_folders_first_in_both_directions() {
+        let make = |name: &str, size, is_dir| Entry {
+            name: name.to_owned(), path: PathBuf::from(name), is_dir,
+            size, modified: None,
+        };
+        let mut files = vec![make("small.txt", 1, false), make("folder", 0, true),
+                             make("big.txt", 100, false)];
+        sort_entries(&mut files, SortBy::Size, false);
+        assert_eq!(files.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+                   vec!["folder", "small.txt", "big.txt"]);
+        sort_entries(&mut files, SortBy::Size, true);
+        assert_eq!(files.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+                   vec!["folder", "big.txt", "small.txt"]);
+    }
 
     #[test]
     fn previous_sessions_default_to_visible_sidebar_and_even_split() {

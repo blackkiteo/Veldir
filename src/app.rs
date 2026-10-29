@@ -959,8 +959,8 @@ impl Veldir {
                     let response=ui.add(egui::TextEdit::singleline(&mut self.address_input)
                         .desired_width((ui.available_width()-75.0).max(180.0))
                         .id(egui::Id::unique("address_bar")));
-                    if (response.lost_focus() && ui.input(|i|i.key_pressed(egui::Key::Enter)))
-                        || ui.button("Vai").clicked(){
+                    let go=ui.button("Vai").clicked();
+                    if (response.lost_focus() && ui.input(|i|i.key_pressed(egui::Key::Enter))) || go {
                         self.navigate(PathBuf::from(self.address_input.trim()));
                     }
                 }else{
@@ -1286,13 +1286,25 @@ impl Veldir {
         let path = tab.path.display().to_string();
         let count = tab.selected.len();
         let focused = self.focused_right == right;
-        let title = if right { "PANNELLO DESTRO" } else { "PANNELLO SINISTRO" };
-        ui.horizontal(|ui| {
-            if ui.add(egui::Button::new(RichText::new(title).small().color(if focused { ACCENT } else { TEXT_MUTED }))
-                .selected(focused)).on_hover_text("Attiva il pannello").clicked() { self.focus(right); }
-            ui.label(RichText::new(format!("{count} selezionati")).small().color(TEXT_MUTED));
+        let title = if right { "DESTRA" } else { "SINISTRA" };
+        let background=if self.dark_theme {
+            if focused {Color32::from_rgb(36,52,70)} else {Color32::from_rgb(26,34,45)}
+        }else if focused {Color32::from_rgb(223,237,250)}
+            else {Color32::from_rgb(237,241,247)};
+        egui::Frame::new().fill(background)
+            .corner_radius(egui::CornerRadius::same(9))
+            .inner_margin(egui::Margin::symmetric(10,7)).show(ui,|ui|{
+            ui.horizontal(|ui|{
+                if ui.add(egui::Button::new(RichText::new(format!("▣  {title}")).strong()
+                    .color(if focused{ACCENT}else{TEXT_MUTED}))
+                    .frame(false)).on_hover_text("Attiva il pannello").clicked() {
+                    self.focus(right);
+                }
+                if focused {ui.label(RichText::new("ATTIVO").small().color(ACCENT));}
+                ui.label(RichText::new(format!("{count} selezionati")).small().color(TEXT_MUTED));
+            });
+            ui.label(RichText::new(path).small().color(TEXT_MUTED));
         });
-        ui.label(RichText::new(path).small().color(TEXT_MUTED));
         ui.horizontal(|ui| {
             ui.label(RichText::new("Filtra").color(TEXT_MUTED));
             let filter_width = if self.secondary.is_some() { 170.0 } else { 260.0 };
@@ -1559,8 +1571,15 @@ impl eframe::App for Veldir {
             let tab = self.current();
             let count = tab.entries.iter().filter(|e| tab.filter.is_empty() ||
                 e.name.to_lowercase().contains(&tab.filter.to_lowercase())).count();
-            ui.label(RichText::new(format!("{count} elementi  ·  {} selezionati", tab.selected.len())).small().color(TEXT_MUTED));
-            ui.label(RichText::new(tab.path.display().to_string()).small().color(TEXT_MUTED));
+            let bytes=tab.entries.iter().filter(|e| !e.is_dir && tab.selected.contains(&e.path))
+                .fold(0u64,|acc,e|acc.saturating_add(e.size));
+            let selected_text=if tab.selected.is_empty() {
+                format!("{count} elementi")
+            } else {
+                format!("{count} elementi  ·  {} selezionati  ·  {}",
+                    tab.selected.len(),pretty_bytes(bytes))
+            };
+            ui.label(RichText::new(selected_text).small().color(TEXT_MUTED));
             ui.separator();
             if self.busy {
                 ui.spinner();

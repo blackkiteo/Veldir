@@ -874,6 +874,7 @@ impl Veldir {
     fn files_ui(&mut self, ui: &mut egui::Ui, right: bool) {
         let mut open = None;
         let mut click = None;
+        let mut menu_action: Option<(&'static str,PathBuf)> = None;
         let mut requested_sort = None;
         let tab = self.panel(right);
         let filter = tab.filter.to_lowercase();
@@ -919,7 +920,16 @@ impl Veldir {
                 for row in range {
                     let item = &tab.entries[indices[row]];
                     let selected = tab.selected.contains(&item.path);
-                    let name = format!("{}  {}", if item.is_dir { "▸" } else { "·" }, item.name);
+                    let extension = item.path.extension().and_then(|s|s.to_str())
+                        .unwrap_or("").to_ascii_lowercase();
+                    let symbol = if item.is_dir { "▣" } else { match extension.as_str() {
+                        "pdf" => "▧", "doc" | "docx" | "txt" | "md" => "▤",
+                        "xls" | "xlsx" | "csv" => "▥",
+                        "jpg" | "jpeg" | "png" | "webp" | "gif" => "▨",
+                        "zip" | "7z" | "rar" => "▦",
+                        "exe" | "msi" => "◈", _ => "▫",
+                    }};
+                    let name = format!("{symbol}   {}",item.name);
                     let file_type = if item.is_dir { "Cartella".to_owned() }
                         else { item.path.extension().and_then(|e| e.to_str())
                             .map(str::to_ascii_uppercase).unwrap_or_else(|| "File".into()) };
@@ -936,6 +946,19 @@ impl Veldir {
                         if !dual { ui.label(RichText::new(modified).color(TEXT_MUTED).small()); }
                         r
                     }).inner.on_hover_text(item.path.display().to_string());
+                    response.context_menu(|ui| {
+                        ui.label(RichText::new(&item.name).strong());
+                        ui.separator();
+                        for (label,action) in [
+                            ("Apri","open"),("Copia","copy"),("Taglia","cut"),
+                            ("Rinomina","rename"),("Dettagli","details"),("Cestino","trash")
+                        ] {
+                            if ui.button(label).clicked() {
+                                menu_action = Some((action,item.path.clone()));
+                                ui.close();
+                            }
+                        }
+                    });
                     if response.clicked() {
                         click = Some((item.path.clone(), ui.input(|i| i.modifiers)));
                     }
@@ -956,6 +979,21 @@ impl Veldir {
             self.open_entry(path);
         }
         if let Some(by) = requested_sort { self.change_sort(right, by); }
+        if let Some((action,path)) = menu_action {
+            self.focus(right);
+            let tab=self.current_mut();
+            tab.selected.clear();tab.selected.insert(path.clone());
+            tab.anchor=Some(path.clone());
+            match action {
+                "open" => self.open_entry(path),
+                "copy" => self.clipboard_set(false),
+                "cut" => self.clipboard_set(true),
+                "rename" => self.prepare_rename(),
+                "details" => {self.preview_visible=true;self.preview_request=None;},
+                "trash" => self.prepare_trash(),
+                _ => {}
+            }
+        }
     }
 
     fn pane_ui(&mut self, ui: &mut egui::Ui, right: bool) {
@@ -1013,6 +1051,7 @@ impl Veldir {
     fn dialog_ui(&mut self, ctx: &egui::Context) {
         let mut job = None;
         let mut close = false;
+        let mut dialog_error = None;
         let parent_path = self.current().path.clone();
         match &mut self.dialog {
             Dialog::None => return,
@@ -1043,6 +1082,38 @@ impl Veldir {
                             if ui.button("Annulla").clicked() { close = true; }
                         });
                     });
+            }
+            Dialog::BatchRename {sources,prefix,find,replace,start} => {
+                egui::Window::new("Rinomina multipla").collapsible(false).resizable(true)
+                    .default_width(480.0).show(ctx,|ui| {
+                    ui.label(format!("{} file selezionati. Numero + prefisso + nome originale.",sources.len()));
+                    ui.horizontal(|ui| { ui.label("Prefisso"); ui.text_edit_singleline(prefix); });
+                    ui.horizontal(|ui| { ui.label("Cerca testo"); ui.text_edit_singleline(find); });
+                    ui.horizontal(|ui| { ui.label("Sostituisci con"); ui.text_edit_singleline(replace); });
+                    ui.horizontal(|ui| { ui.label("Numerazione da"); ui.text_edit_singleline(start); });
+                    let plan = start.parse::<u32>().map_err(|_|"Numero iniziale non valido".to_owned())
+                        .and_then(|n| fs_ops::rename_plan(sources,prefix,find,replace,n));
+                    ui.separator();
+                    match &plan {
+                        Ok(plan) => {
+                            ui.label("Anteprima dei primi cinque nomi:");
+                            for (source,name) in plan.iter().take(5) {
+                                ui.label(format!("{}  →  {name}",
+                                    source.file_name().unwrap_or_default().to_string_lossy()));
+                            }
+                        }
+                        Err(err) => {ui.colored_label(Color32::LIGHT_RED,err); }
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Rinomina i file").clicked() {
+                            match plan {
+                                Ok(changes) => {job=Some(Job::RenameMany{changes});close=true;}
+                                Err(err) => {dialog_error=Some(err);}
+                            }
+                        }
+                        if ui.button("Annulla").clicked() {close=true;}
+                    });
+                });
             }
             Dialog::Delete(paths) => {
                 egui::Window::new("Sposta nel Cestino?").collapsible(false).resizable(false)
@@ -1102,6 +1173,7 @@ impl Veldir {
             }
         }
         if close { self.dialog = Dialog::None; }
+        if let Some(err) = dialog_error { self.status = format!("Rinomina: {err}"); }
         if let Some(job) = job { self.begin_job(job); }
     }
 }

@@ -64,12 +64,12 @@ pub fn load(key: &str) -> Result<Bitmap,String> {
     let wide: Vec<u16>=std::ffi::OsStr::new(&dummy).encode_wide().chain([0]).collect();
     let mut info: ShellInfo=unsafe { std::mem::zeroed() };
     const SHGFI_ICON: u32=0x00000100;
-    const SHGFI_SMALLICON: u32=0x00000001;
+    const SHGFI_LARGEICON: u32=0;
     const SHGFI_USEFILEATTRIBUTES: u32=0x00000010;
     let attrs=if folder {0x10u32} else {0x80u32}; // DIRECTORY or NORMAL
     let ok=unsafe {SHGetFileInfoW(wide.as_ptr(),attrs,&mut info,
         std::mem::size_of::<ShellInfo>() as u32,
-        SHGFI_ICON|SHGFI_SMALLICON|SHGFI_USEFILEATTRIBUTES)};
+        SHGFI_ICON|SHGFI_LARGEICON|SHGFI_USEFILEATTRIBUTES)};
     if ok == 0 || info.icon.is_null() {return Err("Icona Shell non disponibile".into());}
     const SIZE: usize=32;
     let dc=unsafe {CreateCompatibleDC(std::ptr::null_mut())};
@@ -90,6 +90,7 @@ pub fn load(key: &str) -> Result<Bitmap,String> {
         unsafe {DeleteDC(dc);DestroyIcon(info.icon);}
         return Err("Impossibile preparare l'immagine dell'icona".into());
     }
+    unsafe { std::ptr::write_bytes(ptr as *mut u8, 0, SIZE * SIZE * 4); }
     let previous=unsafe {SelectObject(dc,bitmap)};
     let success=unsafe {DrawIconEx(dc,0,0,info.icon,SIZE as i32,SIZE as i32,
         0,std::ptr::null_mut(),3)};

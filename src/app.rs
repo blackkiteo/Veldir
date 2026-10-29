@@ -420,7 +420,11 @@ impl FileClipboardKeys {
                     self.v_down = true;
                     self.v_paste_seen = modifiers.command;
                     if modifiers.command {
-                        action = Some(if modifiers.shift { Action::Import } else { Action::Paste });
+                        action = Some(if modifiers.shift {
+                            Action::Import
+                        } else {
+                            Action::Paste
+                        });
                     }
                 }
                 egui::Event::Key {
@@ -3692,7 +3696,10 @@ mod tests {
     fn native_clipboard_events_route_to_file_actions() {
         use super::{FileClipboardKeys, FileClipboardShortcut as Action};
         let mut tracker = FileClipboardKeys::default();
-        assert_eq!(tracker.read(&[egui::Event::Copy], false), Some(Action::Copy));
+        assert_eq!(
+            tracker.read(&[egui::Event::Copy], false),
+            Some(Action::Copy)
+        );
         assert_eq!(tracker.read(&[egui::Event::Cut], false), Some(Action::Cut));
         assert_eq!(
             tracker.read(&[egui::Event::Paste("some text".into())], false),

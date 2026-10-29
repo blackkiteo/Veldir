@@ -1,5 +1,5 @@
 use crate::fs_ops::{self, Entry, Job};
-use crate::{preview,search,image_view,native_icons};
+use crate::{preview,search,image_view,native_icons,filters,folder_watch};
 use chrono::{DateTime, Local};
 use eframe::egui::{self, Color32, RichText};
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,7 @@ use std::collections::{BTreeSet,HashMap,HashSet,VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc,atomic::{AtomicBool,Ordering}};
-use std::time::Instant;
+use std::time::{Instant,Duration,SystemTime};
 
 const ACCENT: Color32 = Color32::from_rgb(112, 175, 250);
 const TEXT_MUTED: Color32 = Color32::from_rgb(144, 155, 171);
@@ -25,6 +25,7 @@ struct Saved {
     dark_theme: bool,
     preview_visible: bool,
     thumbs_visible: bool,
+    live_refresh: bool,
 }
 
 impl Default for Saved {
@@ -35,6 +36,7 @@ impl Default for Saved {
             sidebar_visible: true, split_ratio: 0.5,
             dark_theme: true, preview_visible: false,
             thumbs_visible: true,
+            live_refresh: true,
         }
     }
 }
@@ -74,6 +76,7 @@ struct Tab {
     filter: String,
     sort_by: SortBy,
     descending: bool,
+    criteria: filters::Criteria,
 }
 
 impl Tab {
@@ -83,6 +86,7 @@ impl Tab {
             loading: false, generation: 0, error: None,
             selected: BTreeSet::new(), anchor: None, filter: String::new(),
             sort_by: SortBy::Name, descending: false,
+            criteria: filters::Criteria::default(),
         }
     }
 }
@@ -96,6 +100,7 @@ enum Message {
     PreviewImageLoaded { generation:u64, result:Result<image_view::Bitmap,String> },
     ThumbnailLoaded {path:PathBuf,result:Result<image_view::Bitmap,String>},
     IconLoaded {key:String,result:Result<image_view::Bitmap,String>},
+    WatchedPath(PathBuf),
 }
 
 enum Dialog {
@@ -165,6 +170,10 @@ pub struct Veldir {
     job_cancel: Arc<AtomicBool>,
     job_progress: Option<fs_ops::Progress>,
     job_started_at: Option<Instant>,
+    watcher: folder_watch::FolderWatcher,
+    watched_paths: Vec<PathBuf>,
+    watch_dirty: HashMap<PathBuf,Instant>,
+    live_refresh: bool,
 }
 
 impl Veldir {
@@ -189,6 +198,12 @@ impl Veldir {
         let saved: Saved = cc.storage.and_then(|s| eframe::get_value(s, "veldir_state"))
             .unwrap_or_default();
         let (tx, rx) = mpsc::channel();
+        let watch_tx=tx.clone();
+        let watch_ctx=cc.egui_ctx.clone();
+        let watcher=folder_watch::FolderWatcher::start(move |path| {
+            let _=watch_tx.send(Message::WatchedPath(path));
+            watch_ctx.request_repaint();
+        });
         let home = dirs_next::home_dir()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("C:\\"));
@@ -228,6 +243,8 @@ impl Veldir {
             search_generation: 0, search_cancel: Arc::new(AtomicBool::new(false)),
             job_cancel: Arc::new(AtomicBool::new(false)), job_progress: None,
             job_started_at: None,
+            watcher,watched_paths:Vec::new(),watch_dirty:HashMap::new(),
+            live_refresh:saved.live_refresh,
         };
         if !app.dark_theme { cc.egui_ctx.set_visuals(egui::Visuals::light()); }
         let restored: Vec<PathBuf> = saved.tabs.into_iter().filter(|p| p.is_dir()).take(12).collect();
@@ -402,6 +419,66 @@ impl Veldir {
         }
     }
 
+    fn sync_watch_paths(&mut self) {
+        let mut paths:Vec<PathBuf>=if self.live_refresh {
+            self.tabs.iter().map(|t|t.path.clone())
+                .chain(self.secondary.iter().map(|t|t.path.clone()))
+                .filter(|p|p.is_dir()).collect()
+        }else{Vec::new()};
+        paths.sort();paths.dedup();
+        if paths!=self.watched_paths {
+            self.watcher.set_paths(paths.clone());
+            self.watched_paths=paths;
+        }
+    }
+
+    fn quiet_reload_path(&mut self,path:&Path) {
+        let mut requests=Vec::new();
+        for tab in self.tabs.iter_mut().chain(self.secondary.iter_mut()) {
+            if tab.path==path && !tab.loading {
+                tab.generation+=1;
+                // Preserve the current list, scrollbar, and selection during reload.
+                requests.push((tab.path.clone(),tab.id,tab.generation));
+            }
+        }
+        for (path,id,generation) in requests {
+            let sender=self.tx.clone();
+            let ctx=self.context.clone();
+            std::thread::spawn(move || {
+                let result=fs_ops::list(&path);
+                let _=sender.send(Message::FolderLoaded{tab_id:id,generation,result});
+                ctx.request_repaint();
+            });
+        }
+    }
+
+    fn apply_watch_changes(&mut self,ctx:&egui::Context) {
+        if !self.live_refresh {
+            self.watch_dirty.clear();
+            return;
+        }
+        if self.watch_dirty.is_empty(){return;}
+        if self.busy {
+            ctx.request_repaint_after(Duration::from_millis(500));
+            return;
+        }
+        let now=Instant::now();
+        let mut affected=HashSet::new();
+        self.watch_dirty.retain(|changed,last| {
+            if now.duration_since(*last)<Duration::from_millis(450) {return true;}
+            for directory in &self.watched_paths {
+                if directory==changed || changed.parent()==Some(directory.as_path()) {
+                    affected.insert(directory.clone());
+                }
+            }
+            false
+        });
+        for path in affected {self.quiet_reload_path(&path);}
+        if !self.watch_dirty.is_empty(){
+            ctx.request_repaint_after(Duration::from_millis(500));
+        }
+    }
+
     fn refresh(&mut self) {
         for i in 0..self.tabs.len() { self.load(i); }
         if self.secondary.is_some() { self.load_secondary(); }
@@ -411,6 +488,15 @@ impl Veldir {
     fn pump(&mut self) {
         while let Ok(message) = self.rx.try_recv() {
             match message {
+                Message::WatchedPath(path)=> {
+                    if self.live_refresh {
+                        if self.thumb_cache.remove(&path).is_some(){
+                            self.thumb_order.retain(|p|p!=&path);
+                        }
+                        self.thumb_failed.remove(&path);
+                        self.watch_dirty.insert(path,Instant::now());
+                    }
+                }
                 Message::FolderLoaded { tab_id, generation, result } => {
                     let tab = self.tabs.iter_mut().find(|t| t.id == tab_id && t.generation == generation)
                         .or_else(|| self.secondary.as_mut()
@@ -420,6 +506,12 @@ impl Veldir {
                         match result {
                             Ok(mut entries) => {
                                 sort_entries(&mut entries, tab.sort_by, tab.descending);
+                                let known:HashSet<PathBuf>=entries.iter()
+                                    .map(|e|e.path.clone()).collect();
+                                tab.selected.retain(|p|known.contains(p));
+                                if tab.anchor.as_ref().is_some_and(|a|!known.contains(a)) {
+                                    tab.anchor=None;
+                                }
                                 tab.entries = entries;
                                 tab.error = None;
                             }
@@ -800,8 +892,10 @@ impl Veldir {
     fn select_all_visible(&mut self) {
         let tab = self.current_mut();
         let filter = tab.filter.to_lowercase();
+        let criteria = tab.criteria;
+        let now = SystemTime::now();
         tab.selected = tab.entries.iter().filter(|item|
-            filter.is_empty() || item.name.to_lowercase().contains(&filter))
+            filters::matches(item,&filter,criteria,now))
             .map(|item| item.path.clone()).collect();
         tab.anchor = None;
     }
@@ -1044,6 +1138,9 @@ impl Veldir {
                     if ui.checkbox(&mut self.sidebar_visible,"Barra laterale").changed(){
                         ui.close();
                     }
+                    if ui.checkbox(&mut self.live_refresh,"Aggiornamento automatico cartelle").changed(){
+                        ui.close();
+                    }
                     let was_dark=self.dark_theme;
                     if ui.checkbox(&mut self.dark_theme,"Tema scuro").changed(){ui.close();}
                     if was_dark!=self.dark_theme{
@@ -1101,8 +1198,10 @@ impl Veldir {
         let mut icons_needed = Vec::new();
         let tab = self.panel(right);
         let filter = tab.filter.to_lowercase();
+        let now=SystemTime::now();
+        let criteria=tab.criteria;
         let indices: Vec<usize> = tab.entries.iter().enumerate()
-            .filter(|(_, item)| filter.is_empty() || item.name.to_lowercase().contains(&filter))
+            .filter(|(_, item)| filters::matches(item,&filter,criteria,now))
             .map(|(i, _)| i).collect();
         let count = indices.len();
         let dual = self.secondary.is_some();
@@ -1318,10 +1417,67 @@ impl Veldir {
                 tab.selected.clear();
                 tab.anchor = None;
             }
-            if ui.button("×").on_hover_text("Azzera filtro").clicked() {
+            if ui.button("×").on_hover_text("Azzera filtri").clicked() {
                 tab.filter.clear();
+                tab.criteria=filters::Criteria::default();
                 tab.selected.clear();
                 tab.anchor = None;
+            }
+        });
+        ui.horizontal_wrapped(|ui|{
+            let tab=self.panel_mut(right);
+            let previous=tab.criteria;
+            egui::ComboBox::from_id_salt(("kind_filter",right))
+                .selected_text(match tab.criteria.kind{
+                    filters::FileKind::All=>"Tutti i tipi",
+                    filters::FileKind::Documents=>"Documenti",
+                    filters::FileKind::Images=>"Immagini",
+                    filters::FileKind::Archives=>"Archivi",
+                    filters::FileKind::Video=>"Video",
+                    filters::FileKind::Audio=>"Audio",
+                    filters::FileKind::Other=>"Altri",
+                }).show_ui(ui,|ui|{
+                    for (kind,label) in [
+                        (filters::FileKind::All,"Tutti i tipi"),
+                        (filters::FileKind::Documents,"Documenti"),
+                        (filters::FileKind::Images,"Immagini"),
+                        (filters::FileKind::Archives,"Archivi"),
+                        (filters::FileKind::Video,"Video"),
+                        (filters::FileKind::Audio,"Audio"),
+                        (filters::FileKind::Other,"Altri"),
+                    ]{ui.selectable_value(&mut tab.criteria.kind,kind,label);}
+                });
+            egui::ComboBox::from_id_salt(("size_filter",right))
+                .selected_text(match tab.criteria.size{
+                    filters::SizeRange::All=>"Qualsiasi dimensione",
+                    filters::SizeRange::Small=>"< 1 MiB",
+                    filters::SizeRange::Medium=>"1–100 MiB",
+                    filters::SizeRange::Large=>">= 100 MiB",
+                }).show_ui(ui,|ui|{
+                    for (kind,label) in [
+                        (filters::SizeRange::All,"Qualsiasi dimensione"),
+                        (filters::SizeRange::Small,"< 1 MiB"),
+                        (filters::SizeRange::Medium,"1–100 MiB"),
+                        (filters::SizeRange::Large,">= 100 MiB"),
+                    ]{ui.selectable_value(&mut tab.criteria.size,kind,label);}
+                });
+            egui::ComboBox::from_id_salt(("date_filter",right))
+                .selected_text(match tab.criteria.modified{
+                    filters::ModifiedRange::All=>"Qualsiasi data",
+                    filters::ModifiedRange::Day=>"Ultime 24 ore",
+                    filters::ModifiedRange::Week=>"Ultimi 7 giorni",
+                    filters::ModifiedRange::Month=>"Ultimi 30 giorni",
+                }).show_ui(ui,|ui|{
+                    for (kind,label) in [
+                        (filters::ModifiedRange::All,"Qualsiasi data"),
+                        (filters::ModifiedRange::Day,"Ultime 24 ore"),
+                        (filters::ModifiedRange::Week,"Ultimi 7 giorni"),
+                        (filters::ModifiedRange::Month,"Ultimi 30 giorni"),
+                    ]{ui.selectable_value(&mut tab.criteria.modified,kind,label);}
+                });
+            if previous!=tab.criteria{
+                tab.selected.clear();
+                tab.anchor=None;
             }
         });
         ui.add_space(6.0);
@@ -1478,6 +1634,8 @@ impl Veldir {
 impl eframe::App for Veldir {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.pump();
+        self.sync_watch_paths();
+        self.apply_watch_changes(ui.ctx());
         self.update_preview();
         self.accept_os_drop(ui.ctx());
         self.keyboard(ui.ctx());
@@ -1489,7 +1647,7 @@ impl eframe::App for Veldir {
             .inner_margin(egui::Margin::symmetric(12,9)).show(ui,|ui|{
             ui.horizontal(|ui|{
                 ui.label(RichText::new("◈  VELDIR").strong().size(21.0).color(ACCENT));
-                ui.label(RichText::new("0.8.0  ·  WINDOWS FILE MANAGER")
+                ui.label(RichText::new("0.9.0  ·  WINDOWS FILE MANAGER")
                     .small().color(TEXT_MUTED));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
                     if self.busy {ui.spinner();}
@@ -1569,8 +1727,10 @@ impl eframe::App for Veldir {
         ui.separator();
         ui.horizontal(|ui| {
             let tab = self.current();
-            let count = tab.entries.iter().filter(|e| tab.filter.is_empty() ||
-                e.name.to_lowercase().contains(&tab.filter.to_lowercase())).count();
+            let name_filter=tab.filter.to_lowercase();
+            let now=SystemTime::now();
+            let count = tab.entries.iter().filter(|e|
+                filters::matches(e,&name_filter,tab.criteria,now)).count();
             let bytes=tab.entries.iter().filter(|e| !e.is_dir && tab.selected.contains(&e.path))
                 .fold(0u64,|acc,e|acc.saturating_add(e.size));
             let selected_text=if tab.selected.is_empty() {
@@ -1629,6 +1789,7 @@ impl eframe::App for Veldir {
             dark_theme: self.dark_theme,
             preview_visible: self.preview_visible,
             thumbs_visible: self.thumbs_visible,
+            live_refresh:self.live_refresh,
         };
         eframe::set_value(storage, "veldir_state", &saved);
     }

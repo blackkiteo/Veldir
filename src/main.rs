@@ -7,6 +7,8 @@ mod shell_clipboard;
 mod image_view;
 mod native_icons;
 mod pdf_view;
+mod filters;
+mod folder_watch;
 
 use eframe::egui;
 

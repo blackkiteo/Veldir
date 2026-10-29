@@ -1,4 +1,4 @@
-# Veldir — specifiche tecniche v0.2.1
+# Veldir — specifiche tecniche v0.3.0
 
 ## Ambito
 Windows 10/11 x64. UI Rust + eframe/egui `=0.37.0` (renderer OpenGL/glow). Prototipo standalone senza Electron, account, telemetria o sincronizzazione in rete integrata. Licenza MIT.
@@ -24,12 +24,13 @@ Windows 10/11 x64. UI Rust + eframe/egui `=0.37.0` (renderer OpenGL/glow). Proto
 - Cestino con conferma, preferiti e sessione persistente.
 - Controlli automatici Windows con GitHub Actions.
 - Fix v0.2.1: ID di focus stabili, deselezione automatica al cambio filtro, blocco scorciatoie quando i dialoghi sono attivi.
+- v0.3.0: pannelli ridimensionabili con ratio persistente, barra laterale collassabile, breadcrumb, ordinamento per dimensione/data, Ctrl+A ed Esc.
 
 ## Limiti di sicurezza
 Le operazioni batch non sono transazionali: se la destinazione cambia durante l'esecuzione, alcune copie o spostamenti potrebbero già essere completati. Nessuna sovrascrittura automatica, nessun ripristino universale. Copie senza garanzia di conservare ACL, timestamp o metadati. Il Cestino può essere indisponibile su unità di rete. Non usare su dati importanti prima dei collaudi manuali.
 
 ## Roadmap
 1. **0.2.1:** correzione focus e selezione, verifica CI Windows. Collaudo GUI ancora da eseguire.
-2. **0.3:** divisore trascinabile, barra di avanzamento/annullamento, clipboard Windows, drag & drop interno.
-3. **0.4:** icone native, anteprime, palette comandi e ricerca opzionale indicizzata.
+2. **0.3:** divisore trascinabile, breadcrumb, ordinamento e sidebar collassabile.
+3. **0.4:** barra avanzamento/annullamento, clipboard Windows, drag & drop interno, anteprime e icone native.
 4. **1.0:** benchmark ripetibili, release firmata e distribuzione.

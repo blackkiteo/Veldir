@@ -318,4 +318,107 @@ mod tests {
         assert!(!src.exists());
         assert_eq!(std::fs::read_to_string(dest.join("a")).unwrap(), "A");
     }
+
+    #[test]
+    fn stop_checks_all_conflicts_before_any_publication() {
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("from");
+        let dst = d.path().join("to");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::create_dir(&dst).unwrap();
+        let clean = src.join("clean.txt");
+        let conflicting = src.join("conflict.txt");
+        std::fs::write(&clean, "CLEAN").unwrap();
+        std::fs::write(&conflicting, "INCOMING").unwrap();
+        std::fs::write(dst.join("conflict.txt"), "EXISTING").unwrap();
+
+        let error = execute(
+            vec![clean.clone(), conflicting.clone()],
+            dst.clone(),
+            false,
+            ConflictPolicy::Stop,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(error.contains("Nessun elemento trasferito"));
+        assert!(!dst.join("clean.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(dst.join("conflict.txt")).unwrap(),
+            "EXISTING"
+        );
+        assert_eq!(std::fs::read_to_string(clean).unwrap(), "CLEAN");
+        assert_eq!(
+            std::fs::read_to_string(conflicting).unwrap(),
+            "INCOMING"
+        );
+    }
+
+    #[test]
+    fn keep_both_uses_next_free_suffix_for_repeated_names() {
+        let d = tempfile::tempdir().unwrap();
+        let src_a = d.path().join("from_a");
+        let src_b = d.path().join("from_b");
+        let dst = d.path().join("to");
+        for dir in [&src_a, &src_b, &dst] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        let first = src_a.join("report.txt");
+        let second = src_b.join("report.txt");
+        std::fs::write(&first, "FIRST").unwrap();
+        std::fs::write(&second, "SECOND").unwrap();
+        std::fs::write(dst.join("report.txt"), "ORIGINAL").unwrap();
+
+        execute(
+            vec![first.clone(), second.clone()],
+            dst.clone(),
+            false,
+            ConflictPolicy::KeepBoth,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dst.join("report.txt")).unwrap(),
+            "ORIGINAL"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst.join("report (1).txt")).unwrap(),
+            "FIRST"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst.join("report (2).txt")).unwrap(),
+            "SECOND"
+        );
+        assert_eq!(std::fs::read_to_string(first).unwrap(), "FIRST");
+        assert_eq!(std::fs::read_to_string(second).unwrap(), "SECOND");
+    }
+
+    #[test]
+    fn copying_directory_into_descendant_leaves_no_staging() {
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("parent");
+        let dst = src.join("child");
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("keep.txt"), "PRESERVE").unwrap();
+
+        assert!(
+            execute(
+                vec![src.clone()],
+                dst.clone(),
+                false,
+                ConflictPolicy::KeepBoth,
+                &AtomicBool::new(false),
+                |_| {},
+            )
+            .is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(src.join("keep.txt")).unwrap(),
+            "PRESERVE"
+        );
+        assert_eq!(std::fs::read_dir(dst).unwrap().count(), 0);
+    }
+
 }

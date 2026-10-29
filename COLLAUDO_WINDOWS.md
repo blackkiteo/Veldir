@@ -1,4 +1,4 @@
-# Piano di collaudo Veldir 0.8.0 — Windows 10/11
+# Piano di collaudo Veldir 0.9.0 — Windows 10/11
 
 **Eseguire solo su file di prova, mai su dati importanti.** Il passaggio della CI non sostituisce un collaudo manuale della GUI e delle operazioni.
 
@@ -21,6 +21,16 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 | UI-03 | Nascondi la barra laterale e riapri | Stato della barra conservato |
 | UI-04 | Clicca su una cartella nella barra percorso | Navigazione immediata alla cartella scelta |
 | UI-05 | Apri 5-8 schede e passa tra loro | Etichette e tasti chiusura leggibili, scheda attiva riconoscibile |
+| FILTER-03 | Attiva Documenti + 1–100 MiB + Ultimi 7 giorni | Solo file che soddisfano tutti i criteri, cartelle sempre visibili |
+| FILTER-04 | Seleziona file, modifica un filtro | Selezione azzerata, nessuna operazione su elementi nascosti |
+| FILTER-05 | Con filtri attivi premi Ctrl+A | Selezione solo degli elementi visibili |
+| FILTER-06 | Premi × con più filtri attivi | Nome, tipo, dimensione e data resettati |
+| WATCH-01 | Con Veldir aperto, crea un file in Esplora nella stessa cartella | Il file appare senza F5 dopo il debounce |
+| WATCH-02 | Rinomina e poi elimina file da Esplora | L'elenco si aggiorna, nessuna selezione stale |
+| WATCH-03 | Disattiva Aggiornamento automatico e modifica la cartella esternamente | Elenco stabile fino a F5; riattivando torna l'aggiornamento automatico |
+| WATCH-04 | Prova su cartella UNC o disco rimovibile | Nessun crash se notifiche assenti o cartella scollegata |
+| WATCH-05 | Copia un file grande nella cartella monitorata | UI responsiva, nessuna scansione ricorsiva o raffica di aggiornamenti |
+
 | UI-06 | Apri menu Operazioni e Visualizza | Tutte le funzioni esistenti raggiungibili senza sovrapposizioni |
 | UI-07 | Seleziona file di dimensioni diverse | Barra di stato mostra conteggio e dimensioni cumulativi |
 | UI-08 | Ridimensiona la finestra da 900 px a schermo intero | Barra degli indirizzi, menu e pannelli non si sovrappongono |

@@ -1,8 +1,25 @@
-# Veldir v0.3.0 — file manager leggero per Windows
+# Veldir v0.4.0 — file manager leggero per Windows
 
 Prototipo **open source MIT** in Rust + egui, ispirato alla filosofia di File Pilot, con codice e identità indipendenti. **Non affiliato a File Pilot.**
 
 > **Stato reale:** Veldir 0.2.0 e 0.2.1 hanno superato compilazione, test e build release su GitHub Actions. La versione 0.3.0 introduce un aggiornamento dell'interfaccia; scaricare l'EXE solo da una build 0.3.0 completata con successo. **Non è ancora stato eseguito un collaudo manuale della GUI Windows. Non usare su file importanti prima di quel collaudo.**
+
+## Funzioni aggiunte nella v0.4.0
+
+- Menu contestuale per file e cartelle (funzioni base Veldir, non ancora Shell Windows).
+- Indicatori grafici per le principali estensioni, non ancora le icone native del sistema.
+- Finestra ricerca ricorsiva (Ctrl+Maiusc+F), con corrispondenza fuzzy, massimo 250 risultati e arresto su richiesta; i collegamenti non vengono attraversati.
+- Finestra dettagli e anteprima testuale (F3) per TXT, MD, JSON, XML, CSV, codice e log: massimo 32 KiB per file.
+- Tema chiaro/scuro selezionabile, memorizzato.
+- Rinomina multipla con anteprima: prefisso, sostituzione del testo nel nome e numerazione, con rifiuto di collisioni.
+- Avanzamento per numero di elementi nei trasferimenti batch e annullamento tra un elemento e il successivo; il singolo file in corso non viene interrotto.
+- Test per ricerca, anteprima, rinomina sicura e annullamento.
+
+**Nota sicurezza:** in caso di cancellazione di un batch, gli elementi già completati rimangono modificati. L'app non ha rollback completo. La copia non preserva garantitamente ACL, timestamp e metadati. Evita file importanti fino al collaudo manuale della versione 0.4.
+
+## Funzioni ancora mancanti
+
+Icone native Windows e miniature, anteprima PDF/immagini, compatibilità clipboard file della Shell, drag & drop interno, progressi in byte, aggiornamento automatico cartelle, integrazione menu Shell, indicizzazione persistente, undo/rollback, strumenti archivi ZIP completi, installer e firma digitale. Queste non devono essere considerate implementate.
 
 ## Novità della v0.3.0
 
@@ -47,7 +64,7 @@ Lo script invoca `cargo fmt --all`, `cargo check --all-targets`, `cargo test --a
 
 ### GitHub Actions
 
-Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Windows Build** viene compilata la versione Windows e, se tutti i controlli passano, viene pubblicato come artefatto `Veldir-v0.3.0-Windows-x64` con l'EXE e il suo SHA-256. La build v0.2.0 è stata verificata nella CI; **il collaudo manuale dell'interfaccia resta necessario**.
+Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Windows Build** viene compilata la versione Windows e, se tutti i controlli passano, viene pubblicato come artefatto `Veldir-v0.4.0-Windows-x64` con l'EXE e il suo SHA-256. La build v0.2.0 è stata verificata nella CI; **il collaudo manuale dell'interfaccia resta necessario**.
 
 ## Scorciatoie
 

@@ -348,10 +348,7 @@ mod tests {
             "EXISTING"
         );
         assert_eq!(std::fs::read_to_string(clean).unwrap(), "CLEAN");
-        assert_eq!(
-            std::fs::read_to_string(conflicting).unwrap(),
-            "INCOMING"
-        );
+        assert_eq!(std::fs::read_to_string(conflicting).unwrap(), "INCOMING");
     }
 
     #[test]
@@ -420,5 +417,4 @@ mod tests {
         );
         assert_eq!(std::fs::read_dir(dst).unwrap().count(), 0);
     }
-
 }

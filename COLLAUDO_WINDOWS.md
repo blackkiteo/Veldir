@@ -1,4 +1,4 @@
-# Piano di collaudo Veldir 0.3.0 — Windows 10/11
+# Piano di collaudo Veldir 0.5.0 — Windows 10/11
 
 **Eseguire solo su file di prova, mai su dati importanti.** Il passaggio della CI non sostituisce un collaudo manuale della GUI e delle operazioni.
 
@@ -27,6 +27,11 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 | SEL-01 | Ctrl+clic e Maiusc+clic | Selezione multipla corretta |
 | SEL-02 | Ripeti selezione su elenco filtrato | Nessun crash |
 | BATCH-01 | Copia due file tra pannelli | Entrambi copiati, sorgenti conservate |
+| COPY-01 | Copia file da 2 GB e premi Annulla durante il trasferimento | Sorgente integra, nessun file parziale di destinazione, nessuna cartella staging residua |
+| COPY-02 | Copia cartella con più file e sotto-cartelle | La barra mostra byte/byte e file completati, senza bloccarsi |
+| CLIP-01 | Copia 2 file con Ctrl+C in Esplora, in Veldir usa «Da Esplora» | Finestra di conferma, entrambi copiati, originali intatti |
+| CLIP-02 | Taglia un file in Esplora, importalo in Veldir | Solo copia: file originale ancora presente |
+| CLIP-03 | Clipboard contenente testo, premi «Da Esplora» | Messaggio di errore, nessuna modifica ai file |
 | BATCH-02 | Copia con nome già esistente | Nessuna sovrascrittura; preflight blocca |
 | BATCH-03 | Annulla spostamento confermato | Nessuna modifica |
 | BATCH-04 | Sposta file nello stesso volume | Destinazione aggiornata |

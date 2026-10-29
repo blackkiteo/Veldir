@@ -110,6 +110,11 @@ struct InternalClipboard {
     cut: bool,
 }
 
+struct DragIntent {
+    sources: Vec<PathBuf>,
+    source_right: bool,
+}
+
 pub struct Veldir {
     tabs: Vec<Tab>,
     active: usize,
@@ -123,6 +128,7 @@ pub struct Veldir {
     shortcuts: Vec<(String, PathBuf)>,
     drives: Vec<PathBuf>,
     clipboard: Option<InternalClipboard>,
+    drag_intent: Option<DragIntent>,
     busy: bool,
     dialog: Dialog,
     status: String,
@@ -190,7 +196,8 @@ impl Veldir {
             tabs: Vec::new(), active: 0, secondary: None, focused_right: false,
             next_id: 1, tx, rx, context: cc.egui_ctx.clone(),
             favorites: saved.favorites, shortcuts, drives,
-            clipboard: None, busy: false, dialog: Dialog::None,
+            clipboard: None, drag_intent: None,
+            busy: false, dialog: Dialog::None,
             status: "Pronto".into(), editing_address: false, address_input: String::new(),
             sidebar_visible: saved.sidebar_visible,
             split_ratio: bounded_split_ratio(saved.split_ratio),
@@ -604,10 +611,28 @@ impl Veldir {
 
     fn clipboard_set(&mut self, cut: bool) {
         let sources = self.selected();
-        if !sources.is_empty() {
-            self.clipboard = Some(InternalClipboard { sources, cut });
-            self.status = if cut { "Elemento tagliato (clipboard interna)".into() }
-                else { "Elemento copiato (clipboard interna)".into() };
+        if sources.is_empty() { return; }
+        self.clipboard = Some(InternalClipboard { sources: sources.clone(), cut });
+        if cut {
+            // Cut stays local until a confirmed move. Never publish a MOVE intent to Explorer.
+            self.status = "Taglia pronto in Veldir: incolla con Ctrl+V (solo interno)".into();
+        } else {
+            match crate::shell_clipboard::copy_files_to_explorer(&sources) {
+                Ok(()) => self.status = format!(
+                    "{} elementi copiati: clipboard Veldir e Windows", sources.len()),
+                Err(error) => self.status = format!(
+                    "Copia interna pronta. Clipboard Windows non aggiornata: {error}"),
+            }
+        }
+    }
+
+    fn copy_selection_to_windows(&mut self) {
+        let sources=self.selected();
+        if sources.is_empty() { return; }
+        match crate::shell_clipboard::copy_files_to_explorer(&sources) {
+            Ok(()) => self.status = format!(
+                "{} elementi copiati nella clipboard Windows",sources.len()),
+            Err(err) => self.status = format!("Clipboard Windows: {err}"),
         }
     }
 
@@ -837,11 +862,17 @@ impl Veldir {
                 };
             }
             if ui.add_enabled(!self.busy && selected, egui::Button::new("Copia"))
-                .on_hover_text("Ctrl+C").clicked() { self.clipboard_set(false); }
+                .on_hover_text("Ctrl+C · esporta anche in Esplora Windows").clicked() {
+                self.clipboard_set(false);
+            }
             if ui.add_enabled(!self.busy && selected, egui::Button::new("Taglia"))
                 .on_hover_text("Ctrl+X").clicked() { self.clipboard_set(true); }
             if ui.add_enabled(!self.busy && self.clipboard.is_some(), egui::Button::new("Incolla"))
                 .on_hover_text("Ctrl+V · clipboard interna").clicked() { self.paste(); }
+            if ui.add_enabled(!self.busy && selected, egui::Button::new("Verso Esplora"))
+                .on_hover_text("Copia i percorsi nella clipboard Windows").clicked() {
+                self.copy_selection_to_windows();
+            }
             if ui.add_enabled(!self.busy, egui::Button::new("Da Esplora"))
                 .on_hover_text("Copia file dalla clipboard Windows · Ctrl+Maiusc+V").clicked() {
                 self.import_explorer_clipboard();
@@ -1173,9 +1204,9 @@ impl Veldir {
             Dialog::ExternalDrop { sources, destination } => {
                 let left = self.tabs[self.active].path.clone();
                 let right = self.secondary.as_ref().map(|p| p.path.clone());
-                egui::Window::new("Importa file da Windows").collapsible(false).resizable(false)
+                egui::Window::new("Conferma copia dei file").collapsible(false).resizable(false)
                     .show(ctx, |ui| {
-                        ui.label(format!("{} file/cartelle selezionati da Windows", sources.len()));
+                        ui.label(format!("{} elementi da copiare", sources.len()));
                         ui.label("Scegli dove COPIARLI. Le sorgenti non verranno rimosse.");
                         ui.add_space(6.0);
                         ui.selectable_value(destination, left.clone(), format!("Sinistra: {}", left.display()));
@@ -1211,7 +1242,7 @@ impl eframe::App for Veldir {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("◈ VELDIR").strong().size(18.0).color(ACCENT));
-            ui.label(RichText::new("0.5.0   •   FILE MANAGER FOR WINDOWS").small().color(TEXT_MUTED));
+            ui.label(RichText::new("0.6.0   •   FILE MANAGER FOR WINDOWS").small().color(TEXT_MUTED));
         });
         ui.add_space(8.0);
         self.tabs_ui(ui);

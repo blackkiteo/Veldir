@@ -1,6 +1,6 @@
 [package]
 name = "veldir"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Veldir contributors"]
@@ -15,6 +15,7 @@ trash = "5.2.9"
 opener = "0.9.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tempfile = "3"
+image = { version = "=0.25.8", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

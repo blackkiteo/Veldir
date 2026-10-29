@@ -1989,7 +1989,7 @@ mod tests {
         tab.filter = "txt".into();
         let modifiers = egui::Modifiers { ctrl: true, command: true, ..Default::default() };
         let output = ctx.run_ui(egui::RawInput {
-            events: vec![egui::Event::Key {
+            events: vec![egui::Event::ModifiersChanged(modifiers), egui::Event::Key {
                 key: egui::Key::A, physical_key: None, pressed: true,
                 repeat: false, modifiers,
             }], ..Default::default()

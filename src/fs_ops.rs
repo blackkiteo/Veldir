@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
+use std::time::{Duration, Instant};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -115,31 +116,89 @@ fn is_windows_reparse_point(_meta: &fs::Metadata) -> bool {
 /// On failure tempfile removes only staging files created by Veldir.
 /// Junctions and symlinks are rejected to avoid unsafe recursive traversal.
 fn copy_no_links(source: &Path, target: &Path) -> Result<(), String> {
+    let cancelled = AtomicBool::new(false);
+    copy_tree_progress(source, target, &cancelled, &mut |_| {})
+}
+
+/// Refuses links and junctions in both the preflight and the copy itself.
+fn tree_size(source: &Path) -> Result<u64, String> {
+    let mut stack = vec![source.to_path_buf()];
+    let mut total = 0u64;
+    while let Some(path) = stack.pop() {
+        let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if meta.file_type().is_symlink() || is_windows_reparse_point(&meta) {
+            return Err(format!("Collegamento o junction non supportati: {}", path.display()));
+        }
+        if meta.is_dir() {
+            for child in fs::read_dir(&path).map_err(|e| e.to_string())? {
+                stack.push(child.map_err(|e| e.to_string())?.path());
+            }
+        } else if meta.is_file() {
+            total = total.checked_add(meta.len())
+                .ok_or("Dimensione complessiva troppo grande")?;
+        } else {
+            return Err("Tipo di file non supportato".into());
+        }
+    }
+    Ok(total)
+}
+
+/// Each write is to a private staging path; a cancellation cleans that staging
+/// directory instead of publishing a partial destination.
+fn copy_tree_progress(
+    source: &Path, target: &Path, cancelled: &AtomicBool,
+    on_chunk: &mut impl FnMut(u64),
+) -> Result<(), String> {
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("Copia annullata: destinazione incompleta eliminata".into());
+    }
     let meta = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
     if meta.file_type().is_symlink() || is_windows_reparse_point(&meta) {
-        return Err(format!(
-            "Collegamenti e punti di reindirizzamento non copiati: {}",
-            source.display()
-        ));
+        return Err(format!("Collegamento o junction non copiato: {}", source.display()));
     }
     if meta.is_dir() {
         fs::create_dir(target).map_err(|e| e.to_string())?;
         for child in fs::read_dir(source).map_err(|e| e.to_string())? {
             let child = child.map_err(|e| e.to_string())?;
-            copy_no_links(&child.path(), &target.join(child.file_name()))?;
+            copy_tree_progress(&child.path(), &target.join(child.file_name()), cancelled, on_chunk)?;
         }
     } else if meta.is_file() {
         let mut input = fs::File::open(source).map_err(|e| e.to_string())?;
-        let mut output = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(target)
-            .map_err(|e| e.to_string())?;
-        io::copy(&mut input, &mut output).map_err(|e| e.to_string())?;
+        let mut output = fs::OpenOptions::new().write(true).create_new(true)
+            .open(target).map_err(|e| e.to_string())?;
+        let mut buffer = [0u8; 256 * 1024];
+        loop {
+            if cancelled.load(Ordering::Relaxed) {
+                return Err("Copia annullata: destinazione incompleta eliminata".into());
+            }
+            let n = input.read(&mut buffer).map_err(|e| e.to_string())?;
+            if n == 0 { break; }
+            output.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
+            on_chunk(n as u64);
+        }
         output.flush().map_err(|e| e.to_string())?;
     } else {
         return Err("Tipo di file non supportato".into());
     }
+    Ok(())
+}
+
+fn copy_one_progress(
+    source: &Path, destination_folder: &Path, cancelled: &AtomicBool,
+    on_chunk: &mut impl FnMut(u64),
+) -> Result<(), String> {
+    let target = target_path(source, destination_folder)?;
+    let name = source.file_name().ok_or("Nome sorgente non valido")?;
+    let staging = tempfile::Builder::new().prefix(".veldir-staging-")
+        .tempdir_in(destination_folder)
+        .map_err(|e| format!("Impossibile creare area temporanea: {e}"))?;
+    let staged_target = staging.path().join(name);
+    copy_tree_progress(source, &staged_target, cancelled, on_chunk)?;
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("Copia annullata: destinazione incompleta eliminata".into());
+    }
+    rename_no_replace(&staged_target, &target)
+        .map_err(|e| format!("Destinazione già presente o non disponibile: {e}"))?;
     Ok(())
 }
 
@@ -238,15 +297,50 @@ fn preflight_rename_many(changes: &[(PathBuf, String)]) -> Result<(), String> {
 }
 
 /// Progress is per item. Cancellation is safe between items; an in-progress file finishes first.
-pub fn execute_progress<F: Fn(usize, usize)>(
+/// Progress for safe file transfers. Byte totals refer to content, not metadata.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Progress {
+    pub done_bytes: u64,
+    pub total_bytes: u64,
+    pub done_items: usize,
+    pub total_items: usize,
+}
+
+/// Progress can cancel within an individual file copy (256 KiB chunks).
+/// All incomplete destinations remain in staging and are discarded on failure.
+pub fn execute_progress<F: Fn(Progress)>(
     job: Job, cancelled: &AtomicBool, notify: F
 ) -> Result<String, String> {
     match job {
         Job::CopyMany { sources, destination_folder } => {
             preflight_batch(&sources, &destination_folder)?;
-            execute_batch_progress(sources, cancelled, notify,
-                |source| Job::Copy { source, destination_folder: destination_folder.clone() })
+            let mut total_bytes = 0u64;
+            for source in &sources {
+                total_bytes = total_bytes.checked_add(tree_size(source)?)
+                    .ok_or("Dimensione complessiva troppo grande")?;
+            }
+            let total_items = sources.len();
+            let mut progress = Progress { done_bytes: 0, total_bytes, done_items: 0, total_items };
+            notify(progress);
+            let mut last_report = Instant::now();
+            for (index, source) in sources.iter().enumerate() {
+                if cancelled.load(Ordering::Relaxed) {
+                    return Err(format!("Annullato dopo {index}/{total_items} elementi; copie già pubblicate conservate"));
+                }
+                copy_one_progress(source, &destination_folder, cancelled, &mut |bytes| {
+                    progress.done_bytes = progress.done_bytes.saturating_add(bytes);
+                    if last_report.elapsed() >= Duration::from_millis(120) {
+                        notify(progress);
+                        last_report = Instant::now();
+                    }
+                }).map_err(|e| format!("Interrotto dopo {index}/{total_items} elementi: {e}"))?;
+                progress.done_items += 1;
+                notify(progress);
+            }
+            Ok(format!("Copiati {total_items} elementi"))
         }
+        Job::Copy { source, destination_folder } => execute_progress(
+            Job::CopyMany { sources: vec![source], destination_folder }, cancelled, notify),
         Job::MoveMany { sources, destination_folder } => {
             preflight_batch(&sources, &destination_folder)?;
             execute_batch_progress(sources, cancelled, notify,
@@ -256,33 +350,42 @@ pub fn execute_progress<F: Fn(usize, usize)>(
             |source| Job::Trash { source }),
         Job::RenameMany { changes } => {
             preflight_rename_many(&changes)?;
-            let total = changes.len();
-            for (idx, (source,name)) in changes.into_iter().enumerate() {
+            let total=changes.len();
+            let mut progress=Progress { total_items:total, ..Progress::default() };
+            notify(progress);
+            for (idx,(source,name)) in changes.into_iter().enumerate() {
                 if cancelled.load(Ordering::Relaxed) {
                     return Err(format!("Annullato dopo {idx}/{total} elementi; modifiche precedenti conservate"));
                 }
-                execute(Job::Rename {source,name})?;
-                notify(idx+1,total);
+                execute(Job::Rename{source,name})?;
+                progress.done_items += 1;
+                notify(progress);
             }
             Ok(format!("Rinominati {total} elementi"))
         }
-        single => execute(single),
+        single => {
+            if cancelled.load(Ordering::Relaxed) { return Err("Operazione annullata".into()); }
+            execute(single)
+        }
     }
 }
 
-fn execute_batch_progress<F: Fn(usize,usize)>(
+fn execute_batch_progress<F: Fn(Progress)>(
     sources: Vec<PathBuf>, cancelled: &AtomicBool, notify: F,
     action: impl Fn(PathBuf) -> Job
 ) -> Result<String,String> {
     if sources.is_empty() { return Err("Nessun elemento selezionato".into()); }
     let total=sources.len();
+    let mut progress=Progress {total_items:total, ..Progress::default()};
+    notify(progress);
     for (idx,source) in sources.into_iter().enumerate() {
         if cancelled.load(Ordering::Relaxed) {
             return Err(format!("Annullato dopo {idx}/{total} elementi; modifiche precedenti conservate"));
         }
         execute(action(source)).map_err(|e|
             format!("Interrotto dopo {idx}/{total} elementi, alcuni già modificati: {e}"))?;
-        notify(idx+1,total);
+        progress.done_items += 1;
+        notify(progress);
     }
     Ok(format!("Completati {total} elementi"))
 }
@@ -389,10 +492,48 @@ mod tests {
         let cancelled=AtomicBool::new(false);
         let result=execute_progress(Job::CopyMany {
             sources:vec![a,b],destination_folder:to.clone()
-        },&cancelled,|done,_|{ if done==1 {cancelled.store(true,Ordering::Relaxed);} });
+        },&cancelled,|progress|{ if progress.done_items==1 {cancelled.store(true,Ordering::Relaxed);} });
         assert!(result.is_err());
         assert!(to.join("a.txt").exists());
         assert!(!to.join("b.txt").exists());
+    }
+    #[test]
+    fn large_file_cancellation_keeps_source_and_removes_staging() {
+        let dir=tempfile::tempdir().unwrap();
+        let from=dir.path().join("from");
+        let to=dir.path().join("to");
+        fs::create_dir(&from).unwrap(); fs::create_dir(&to).unwrap();
+        let source=from.join("large.bin");
+        fs::write(&source, vec![7u8; 3 * 1024 * 1024]).unwrap();
+        let cancelled=AtomicBool::new(false);
+        // The engine checks cancellation every 256 KiB.
+        let mut seen=0u64;
+        let result=copy_one_progress(&source,&to,&cancelled,&mut |bytes| {
+            seen+=bytes;
+            if seen>=256*1024 {cancelled.store(true,Ordering::Relaxed);}
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::metadata(&source).unwrap().len(),3*1024*1024);
+        assert_eq!(fs::read_dir(&to).unwrap().count(),0);
+    }
+    #[test]
+    fn byte_progress_reaches_total_on_copy() {
+        let dir=tempfile::tempdir().unwrap();
+        let from=dir.path().join("from");
+        let to=dir.path().join("to");
+        fs::create_dir(&from).unwrap();fs::create_dir(&to).unwrap();
+        let source=from.join("data.bin");
+        fs::write(&source, vec![11u8; 550_000]).unwrap();
+        let cancelled=AtomicBool::new(false);
+        let progress=std::cell::Cell::new(Progress::default());
+        execute_progress(Job::CopyMany {sources:vec![source.clone()],destination_folder:to.clone()},
+            &cancelled,|value|progress.set(value)).unwrap();
+        let p=progress.get();
+        assert_eq!(p.total_bytes,550_000);
+        assert_eq!(p.done_bytes,550_000);
+        assert_eq!(p.done_items,1);
+        assert_eq!(p.total_items,1);
+        assert_eq!(fs::read(&source).unwrap(),fs::read(to.join("data.bin")).unwrap());
     }
     #[test]
     fn windows_bad_names_rejected() {

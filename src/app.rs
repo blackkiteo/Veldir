@@ -2260,7 +2260,7 @@ impl Veldir {
                             !self.busy && self.clipboard.is_some(),
                             egui::Button::new("Incolla"),
                         )
-                        .on_hover_text("Ctrl+V · clipboard interna")
+                        .on_hover_text("Ctrl+V · file da Veldir o Esplora Windows")
                         .clicked()
                     {
                         self.paste();

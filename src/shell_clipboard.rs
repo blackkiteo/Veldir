@@ -315,16 +315,23 @@ mod tests {
         for index in 0..count {
             let size = unsafe { DragQueryFileW(locked, index, null_mut(), 0) };
             let mut buffer = vec![0u16; size as usize + 1];
-            let written =
-                unsafe { DragQueryFileW(locked, index, buffer.as_mut_ptr(), size + 1) };
-            decoded.push(PathBuf::from(OsString::from_wide(&buffer[..written as usize])));
+            let written = unsafe { DragQueryFileW(locked, index, buffer.as_mut_ptr(), size + 1) };
+            decoded.push(PathBuf::from(OsString::from_wide(
+                &buffer[..written as usize],
+            )));
         }
         unsafe {
             GlobalUnlock(handle);
             GlobalFree(handle);
         }
         assert_eq!(count, 2);
-        assert_eq!(decoded, vec![first.canonicalize().unwrap(), second.canonicalize().unwrap()]);
+        assert_eq!(
+            decoded,
+            vec![
+                first.canonicalize().unwrap(),
+                second.canonicalize().unwrap()
+            ]
+        );
         assert_eq!(std::fs::read_to_string(first).unwrap(), "one");
         assert_eq!(std::fs::read_to_string(second).unwrap(), "two");
     }

@@ -2,6 +2,43 @@
 //! No moving, no clipboard mutations, and no assumption that Explorer's Cut means Move.
 use std::path::PathBuf;
 
+/**
+ * Windows increments this when another app replaces the clipboard. A local
+ * Ctrl+X must not silently win over a newer Ctrl+C performed in Explorer.
+ * None means the API cannot identify the clipboard's generation.
+ */
+#[cfg(windows)]
+pub fn sequence_number() -> Option<u32> {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetClipboardSequenceNumber() -> u32;
+    }
+    match unsafe { GetClipboardSequenceNumber() } {
+        0 => None,
+        n => Some(n),
+    }
+}
+
+#[cfg(not(windows))]
+pub fn sequence_number() -> Option<u32> {
+    None
+}
+
+/// Whether CF_HDROP file paths are currently advertised by Windows.
+#[cfg(windows)]
+pub fn contains_files() -> bool {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn IsClipboardFormatAvailable(format: u32) -> i32;
+    }
+    unsafe { IsClipboardFormatAvailable(15) != 0 }
+}
+
+#[cfg(not(windows))]
+pub fn contains_files() -> bool {
+    false
+}
+
 #[cfg(windows)]
 pub fn files_from_explorer() -> Result<Vec<PathBuf>, String> {
     use std::ffi::{OsString, c_void};

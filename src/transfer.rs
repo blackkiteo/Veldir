@@ -1,5 +1,7 @@
 use crate::fs_ops::{self, Job, Progress};
 use std::{
+    fs,
+    io::{self, Read},
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -9,6 +11,141 @@ pub enum ConflictPolicy {
     Skip,
     KeepBoth,
 }
+/// Only treat the OS-level "different volume" result as authorization
+/// to copy-verify-delete. Permissions, locks and all other rename failures
+/// must NOT be silently downgraded to a copy.
+fn is_cross_device(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::CrossesDevices
+}
+
+/// Compare every byte without loading the files into memory. Run on the
+/// transfer worker and check cancellation between reads. The source's
+/// metadata must still match its pre-copy snapshot.
+fn verify_copy(
+    source: &Path,
+    copy: &Path,
+    snapshot: &fs::Metadata,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    if !unchanged_source(source, snapshot) {
+        return Err("Sorgente modificata durante la copia; originale conservato".into());
+    }
+    let mut original = fs::File::open(source).map_err(|e| format!("Riapertura sorgente: {e}"))?;
+    let mut replica = fs::File::open(copy).map_err(|e| format!("Riapertura copia: {e}"))?;
+    let mut source_buffer = [0u8; 256 * 1024];
+    let mut copy_buffer = [0u8; 256 * 1024];
+    loop {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("Annullato prima della pubblicazione; originale conservato".into());
+        }
+        let n = original
+            .read(&mut source_buffer)
+            .map_err(|e| format!("Verifica sorgente: {e}"))?;
+        if n == 0 {
+            if replica
+                .read(&mut copy_buffer[..1])
+                .map_err(|e| format!("Verifica destinazione: {e}"))?
+                != 0
+            {
+                return Err("Copia più lunga della sorgente; originale conservato".into());
+            }
+            break;
+        }
+        replica
+            .read_exact(&mut copy_buffer[..n])
+            .map_err(|e| format!("Copia incompleta: {e}"))?;
+        if source_buffer[..n] != copy_buffer[..n] {
+            return Err("Verifica byte fallita: la copia non coincide con la sorgente".into());
+        }
+    }
+    if !unchanged_source(source, snapshot) {
+        return Err("Sorgente modificata durante la verifica; originale conservato".into());
+    }
+    Ok(())
+}
+
+fn unchanged_source(source: &Path, snapshot: &fs::Metadata) -> bool {
+    let Ok(now) = fs::symlink_metadata(source) else {
+        return false;
+    };
+    now.is_file()
+        && now.len() == snapshot.len()
+        && snapshot
+            .modified()
+            .ok()
+            .zip(now.modified().ok())
+            .is_some_and(|(before, after)| before == after)
+}
+
+/// One file, staged on the destination volume and verified byte-for-byte.
+/// Folder moves between volumes intentionally remain unsupported: recursive
+/// source deletion can be partially successful and needs a separate design.
+fn move_one_with_rename(
+    source: &Path,
+    target: &Path,
+    destination: &Path,
+    cancelled: &AtomicBool,
+    notify: &dyn Fn(Progress),
+    rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> Result<(), String> {
+    match rename(source, target) {
+        Ok(()) => return Ok(()),
+        Err(error) if !is_cross_device(&error) => {
+            return Err(format!("Spostamento non riuscito: {error}"));
+        }
+        Err(_) => {}
+    }
+    let snapshot = fs::symlink_metadata(source)
+        .map_err(|e| format!("Sorgente non leggibile: {e}"))?;
+    if !snapshot.is_file() || fs_ops::tree_size(source).is_err() {
+        return Err(
+            "Spostamento tra dischi disponibile solo per file regolari; cartelle e collegamenti non vengono modificati"
+                .into(),
+        );
+    }
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("Operazione annullata; sorgente non modificata".into());
+    }
+    // CopyMany uses its own temporary directory before publishing into our
+    // private staging. All intermediate files are removed by RAII on failure.
+    let staging = tempfile::Builder::new()
+        .prefix(".veldir-cross-volume-")
+        .tempdir_in(destination)
+        .map_err(|e| format!("Impossibile preparare il volume di destinazione: {e}"))?;
+    fs_ops::execute_progress(
+        Job::CopyMany {
+            sources: vec![source.to_path_buf()],
+            destination_folder: staging.path().to_path_buf(),
+        },
+        cancelled,
+        notify,
+    )?;
+    let name = source.file_name().ok_or("Nome sorgente non valido")?;
+    let staged_file = staging.path().join(name);
+    verify_copy(source, &staged_file, &snapshot, cancelled)?;
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("Annullato prima della pubblicazione; sorgente conservata".into());
+    }
+    fs_ops::rename_no_replace(&staged_file, target)
+        .map_err(|e| format!("Impossibile pubblicare la copia, sorgente conservata: {e}"))?;
+    // Once published, never delete the destination on cleanup failure: it is
+    // a verified full copy. Report both paths so the user can reconcile them.
+    if cancelled.load(Ordering::Relaxed) || !unchanged_source(source, &snapshot) {
+        return Err(format!(
+            "Copia completa pubblicata in {}, ma sorgente {} conservata (annullamento o modifica esterna)",
+            target.display(),
+            source.display()
+        ));
+    }
+    fs::remove_file(source).map_err(|e| {
+        format!(
+            "Copia verificata in {}, ma impossibile eliminare la sorgente {}: {e}. Entrambe le copie possono essere presenti",
+            target.display(),
+            source.display()
+        )
+    })
+}
+
 pub fn execute(
     sources: Vec<PathBuf>,
     destination: PathBuf,
@@ -76,9 +213,22 @@ pub fn execute(
             original
         };
         let result = if cut {
-            fs_ops::rename_no_replace(&source, &target).map_err(|e| {
-                format!("Spostamento non riuscito: {e}. Per dischi diversi usare Copia.")
-            })
+            let progress = |p: Progress| {
+                notify(Progress {
+                    done_items: done + skipped + errors.len(),
+                    total_items: total,
+                    done_bytes: completed_bytes.saturating_add(p.done_bytes),
+                    total_bytes,
+                })
+            };
+            move_one_with_rename(
+                &source,
+                &target,
+                &destination,
+                cancelled,
+                &progress,
+                fs_ops::rename_no_replace,
+            )
         } else {
             // Copy into a private sibling, then atomically publish without replacement.
             let staging = tempfile::Builder::new()

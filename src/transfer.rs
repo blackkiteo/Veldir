@@ -95,8 +95,8 @@ fn move_one_with_rename(
         }
         Err(_) => {}
     }
-    let snapshot = fs::symlink_metadata(source)
-        .map_err(|e| format!("Sorgente non leggibile: {e}"))?;
+    let snapshot =
+        fs::symlink_metadata(source).map_err(|e| format!("Sorgente non leggibile: {e}"))?;
     if !snapshot.is_file() || fs_ops::tree_size(source).is_err() {
         return Err(
             "Spostamento tra dischi disponibile solo per file regolari; cartelle e collegamenti non vengono modificati"
@@ -331,7 +331,9 @@ mod tests {
     fn windows_not_same_device_error_is_recognized() {
         // ERROR_NOT_SAME_DEVICE returned by MoveFileExW when flags == 0.
         assert!(is_cross_device(&io::Error::from_raw_os_error(17)));
-        assert!(!is_cross_device(&io::Error::from(io::ErrorKind::PermissionDenied)));
+        assert!(!is_cross_device(&io::Error::from(
+            io::ErrorKind::PermissionDenied
+        )));
     }
 
     #[test]
@@ -357,14 +359,14 @@ mod tests {
         );
         assert!(result.is_err());
         assert_eq!(fs::metadata(&from).unwrap().len(), 1_000_001);
-        assert!(!to.exists(), "A copy must not be published after source mutation");
+        assert!(
+            !to.exists(),
+            "A copy must not be published after source mutation"
+        );
         assert_eq!(fs::read_dir(dest).unwrap().count(), 0);
     }
 
-    fn simulate_cross_volume(
-        _source: &Path,
-        _target: &Path,
-    ) -> io::Result<()> {
+    fn simulate_cross_volume(_source: &Path, _target: &Path) -> io::Result<()> {
         Err(io::Error::from(io::ErrorKind::CrossesDevices))
     }
 

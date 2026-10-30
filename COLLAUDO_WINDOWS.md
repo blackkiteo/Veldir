@@ -105,7 +105,11 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 | MOVE-X02 | Sposta più file di prova con Stop, Salta e Conserva entrambi | Nessuna sovrascrittura, riepilogo chiaro, nessun elemento perso |
 | MOVE-X03 | Avvia spostamento file di 1–2 GiB su disco diverso e premi Annulla durante la copia | Sorgente integra, nessun file destinazione pubblicato |
 | MOVE-X04 | Simula cartella destinazione non scrivibile o file sorgente bloccato | Errore esplicito; sorgente conservata, nessuna destinazione parziale |
-| MOVE-X05 | Sposta una cartella, con file di prova, tra dischi differenti | Funzione ancora non supportata: errore e nessuna modifica |
+| MOVE-X05 | Sposta una cartella di prova con file e sottocartelle da C: a un altro disco | Copia completa e byte-identica sulla destinazione; sorgente inviata al Cestino solo dopo verifica; ripristinabile se il volume supporta il Cestino |
+| MOVE-X07 | Sposta una cartella con sottocartella vuota, Unicode e più file | Tutti i nomi, byte e cartelle vuote conservati; nessuna sostituzione |
+| MOVE-X08 | Sposta cartella grande di prova e annulla mentre copia | Directory originale invariata, destinazione finale assente, staging rimosso |
+| MOVE-X09 | Usa una cartella di prova contenente un symlink o una junction | Rifiuto sicuro, nessuna destinazione pubblicata, sorgente invariata |
+| MOVE-X10 | Simula Cestino non disponibile con volume di prova | Dopo copia verificata, Veldir segnala esito parziale; entrambe le posizioni verificabili; mai eliminazione diretta ricorsiva |
 | MOVE-X06 | Controlla un file con nome Unicode; poi modifica la sorgente mentre la copia è in corso | Unicode integro; se la sorgente cambia, operazione prudenzialmente interrotta senza eliminarla |
 
 ## Verifiche spazio disponibile delle unità (nuova implementazione)

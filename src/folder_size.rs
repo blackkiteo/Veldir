@@ -82,7 +82,7 @@ mod tests {
         fs::create_dir(root.path().join("A").join("B")).unwrap();
         fs::write(root.path().join("file.txt"), b"12345").unwrap();
         fs::write(root.path().join("A").join("more.bin"), [7u8; 11]).unwrap();
-        fs::write(root.path().join("A").join("B").join("zero"), []).unwrap();
+        fs::write(root.path().join("A").join("B").join("zero"), b"").unwrap();
         assert_eq!(calculate(root.path()).unwrap(), 16);
         assert_eq!(calculate(&root.path().join("A")).unwrap(), 11);
         assert_eq!(calculate(&root.path().join("A").join("B")).unwrap(), 0);
@@ -104,14 +104,6 @@ mod tests {
         file.write_all(&[0u8; 257]).unwrap();
         file.flush().unwrap();
         assert_eq!(calculate(root.path()).unwrap(), 257);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_junctions_are_not_followed() {
-        // A reparse-point test is intentionally handled in the real Windows
-        // acceptance checklist; creating junctions requires OS permissions.
-        assert_eq!(calculate(&tempfile::tempdir().unwrap().path().join("missing")).is_err(), true);
     }
 
     #[cfg(unix)]

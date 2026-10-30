@@ -198,6 +198,7 @@ struct Saved {
     preview_visible: bool,
     thumbs_visible: bool,
     live_refresh: bool,
+    calculate_folder_sizes: bool,
     columns: Columns,
     restore_session: bool,
 }
@@ -216,6 +217,7 @@ impl Default for Saved {
             preview_visible: false,
             thumbs_visible: true,
             live_refresh: true,
+            calculate_folder_sizes: true,
             columns: Columns::default(),
             restore_session: true,
         }
@@ -326,6 +328,11 @@ enum Message {
     IconLoaded {
         key: String,
         result: Result<image_view::Bitmap, String>,
+    },
+    FolderSizeLoaded {
+        generation: u64,
+        path: PathBuf,
+        result: Result<u64, String>,
     },
     WatchedPath(PathBuf),
 }
@@ -505,6 +512,11 @@ pub struct Veldir {
     thumb_order: VecDeque<PathBuf>,
     thumb_pending: HashSet<PathBuf>,
     thumb_failed: HashSet<PathBuf>,
+    folder_size_cache: HashMap<PathBuf, Result<u64, String>>,
+    folder_size_order: VecDeque<PathBuf>,
+    folder_size_pending: HashSet<PathBuf>,
+    folder_size_generation: u64,
+    calculate_folder_sizes: bool,
     icon_cache: HashMap<String, egui::TextureHandle>,
     icon_pending: HashSet<String>,
     icon_failed: HashSet<String>,
@@ -655,6 +667,11 @@ impl Veldir {
             thumb_order: VecDeque::new(),
             thumb_pending: HashSet::new(),
             thumb_failed: HashSet::new(),
+            folder_size_cache: HashMap::new(),
+            folder_size_order: VecDeque::new(),
+            folder_size_pending: HashSet::new(),
+            folder_size_generation: 0,
+            calculate_folder_sizes: saved.calculate_folder_sizes,
             icon_cache: HashMap::new(),
             icon_pending: HashSet::new(),
             icon_failed: HashSet::new(),
@@ -985,6 +1002,9 @@ impl Veldir {
             }
             false
         });
+        if !affected.is_empty() {
+            self.invalidate_folder_sizes();
+        }
         for path in affected {
             self.quiet_reload_path(&path);
         }
@@ -994,6 +1014,7 @@ impl Veldir {
     }
 
     fn refresh(&mut self) {
+        self.invalidate_folder_sizes();
         self.asset_generation = self.asset_generation.wrapping_add(1);
         self.thumb_cache.clear();
         self.thumb_order.clear();
@@ -1039,6 +1060,13 @@ impl Veldir {
                         tab.loading = false;
                         match result {
                             Ok(mut entries) => {
+                                for entry in &mut entries {
+                                    if entry.is_dir {
+                                        if let Some(Ok(bytes)) = self.folder_size_cache.get(&entry.path) {
+                                            entry.size = *bytes;
+                                        }
+                                    }
+                                }
                                 sort_entries(&mut entries, tab.sort_by, tab.descending);
                                 let known: HashSet<PathBuf> =
                                     entries.iter().map(|e| e.path.clone()).collect();
@@ -1180,6 +1208,33 @@ impl Veldir {
                         }
                     }
                 }
+                Message::FolderSizeLoaded {
+                    generation,
+                    path,
+                    result,
+                } => {
+                    self.folder_size_pending.remove(&path);
+                    if generation != self.folder_size_generation {
+                        continue;
+                    }
+                    if let Ok(bytes) = &result {
+                        for tab in self.tabs.iter_mut().chain(self.secondary.iter_mut()) {
+                            if let Some(entry) = tab.entries.iter_mut().find(|e| e.is_dir && e.path == path) {
+                                entry.size = *bytes;
+                                if tab.sort_by == SortBy::Size {
+                                    sort_entries(&mut tab.entries, tab.sort_by, tab.descending);
+                                }
+                            }
+                        }
+                    }
+                    if self.folder_size_cache.len() >= 256 {
+                        if let Some(old) = self.folder_size_order.pop_front() {
+                            self.folder_size_cache.remove(&old);
+                        }
+                    }
+                    self.folder_size_order.push_back(path.clone());
+                    self.folder_size_cache.insert(path, result);
+                }
                 Message::IconLoaded { key, result } => {
                     self.icon_pending.remove(&key);
                     match result {
@@ -1302,6 +1357,57 @@ impl Veldir {
         let image =
             egui::ColorImage::from_rgba_unmultiplied([bitmap.width, bitmap.height], &bitmap.rgba);
         ctx.load_texture(label, image, egui::TextureOptions::LINEAR)
+    }
+
+    /// Keep scans strictly asynchronous, limited to currently visible folders.
+    /// In-flight work is never duplicated and obsolete generations are ignored.
+    fn schedule_folder_sizes(&mut self, paths: Vec<PathBuf>) {
+        if !self.calculate_folder_sizes || !self.columns.size {
+            return;
+        }
+        for path in paths {
+            if self.folder_size_pending.len() >= 2 {
+                break;
+            }
+            if self.folder_size_pending.contains(&path)
+                || self.folder_size_cache.contains_key(&path)
+            {
+                continue;
+            }
+            self.folder_size_pending.insert(path.clone());
+            let generation = self.folder_size_generation;
+            let sender = self.tx.clone();
+            let ctx = self.context.clone();
+            std::thread::spawn(move || {
+                let result = crate::folder_size::calculate(&path);
+                let _ = sender.send(Message::FolderSizeLoaded {
+                    generation,
+                    path,
+                    result,
+                });
+                ctx.request_repaint();
+            });
+        }
+    }
+
+    fn invalidate_folder_sizes(&mut self) {
+        self.folder_size_generation = self.folder_size_generation.wrapping_add(1);
+        self.folder_size_cache.clear();
+        self.folder_size_order.clear();
+        // Keep pending paths until their threads finish, preserving the
+        // concurrency limit even across refreshes. Old results are discarded.
+        for tab in self.tabs.iter_mut().chain(self.secondary.iter_mut()) {
+            let mut changed = false;
+            for entry in &mut tab.entries {
+                if entry.is_dir {
+                    entry.size = 0;
+                    changed = true;
+                }
+            }
+            if changed && tab.sort_by == SortBy::Size {
+                sort_entries(&mut tab.entries, tab.sort_by, tab.descending);
+            }
+        }
     }
 
     fn schedule_assets(&mut self, images: Vec<PathBuf>, icons: Vec<String>) {
@@ -2339,6 +2445,10 @@ impl Veldir {
                         ui.menu_button("Visualizza", |ui| {
                             ui.checkbox(&mut self.columns.kind, "Colonna tipo");
                             ui.checkbox(&mut self.columns.size, "Colonna dimensione");
+                            if ui.checkbox(&mut self.calculate_folder_sizes, "Calcola dimensioni cartelle").on_hover_text("Calcolo ricorsivo in background per le sole cartelle visibili; disattiva su dischi molto lenti").changed() {
+                                self.invalidate_folder_sizes();
+                                ui.close();
+                            }
                             ui.checkbox(&mut self.columns.modified, "Colonna modificato");
                             ui.checkbox(
                                 &mut self.columns.metadata_in_dual,
@@ -2566,6 +2676,7 @@ impl Veldir {
         let mut menu_action: Option<(&'static str, PathBuf)> = None;
         let requested_sort;
         let mut thumbnails_needed = Vec::new();
+        let mut folders_needed = Vec::new();
         let mut icons_needed = Vec::new();
         let mut focus_ids = Vec::new();
         let mut columns = self.columns.clone();
@@ -2667,7 +2778,16 @@ impl Veldir {
                         .unwrap_or_else(|| "File".into())
                 };
                 let size = if item.is_dir {
-                    "—".into()
+                    if self.calculate_folder_sizes && w_size > 0.0 {
+                        folders_needed.push(item.path.clone());
+                        match self.folder_size_cache.get(&item.path) {
+                            Some(Ok(bytes)) => pretty_bytes(*bytes),
+                            Some(Err(_)) => "n/d".to_owned(),
+                            None => "…".to_owned(),
+                        }
+                    } else {
+                        "—".to_owned()
+                    }
                 } else {
                     pretty_bytes(item.size)
                 };
@@ -2786,7 +2906,16 @@ impl Veldir {
                 response.widget_info(|| {
                     egui::WidgetInfo::selected(egui::Role::Row, true, selected, &item.name)
                 });
-                let response = response.on_hover_text(display_path(&item.path));
+                let hover = if item.is_dir && self.calculate_folder_sizes {
+                    match self.folder_size_cache.get(&item.path) {
+                        Some(Err(error)) => format!("{}\nDimensione non disponibile: {error}", display_path(&item.path)),
+                        Some(Ok(bytes)) => format!("{}\nDimensione cartella: {} (contenuto ricorsivo)", display_path(&item.path), pretty_bytes(*bytes)),
+                        None => format!("{}\nCalcolo dimensione in background…", display_path(&item.path)),
+                    }
+                } else {
+                    display_path(&item.path)
+                };
+                let response = response.on_hover_text(hover);
                 response.context_menu(|ui| {
                     ui.label(RichText::new(&item.name).strong());
                     ui.separator();
@@ -2829,6 +2958,7 @@ impl Veldir {
         self.columns = columns;
         self.panel_mut(right).scroll_to = None;
         self.schedule_assets(thumbnails_needed, icons_needed);
+        self.schedule_folder_sizes(folders_needed);
         if let Some((path, modifiers)) = click {
             // Selection is resolved against visible, filtered order.
             let ordered: Vec<PathBuf> = indices
@@ -3631,6 +3761,7 @@ impl eframe::App for Veldir {
             preview_visible: self.preview_visible,
             thumbs_visible: self.thumbs_visible,
             live_refresh: self.live_refresh,
+            calculate_folder_sizes: self.calculate_folder_sizes,
             columns: self.columns.clone(),
             restore_session: self.restore_session,
         };

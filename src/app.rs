@@ -1161,10 +1161,12 @@ impl Veldir {
                         Err(error) => {
                             // Some operations may have changed files before reporting an error.
                             self.refresh();
-                            self.status = format!(
-                                "Errore: {}",
-                                error.lines().next().unwrap_or("Operazione non completata")
-                            );
+                            let heading = error.lines().next().unwrap_or("Operazione non completata");
+                            self.status = if error.contains("PARZIALE:") {
+                                format!("Attenzione — trasferimento parziale: {heading}")
+                            } else {
+                                format!("Errore: {heading}")
+                            };
                         }
                     }
                 }

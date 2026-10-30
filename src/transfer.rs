@@ -828,6 +828,88 @@ mod tests {
     }
 
     #[test]
+    fn published_folder_failure_is_distinct_from_unpublished_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let dest = dir.path().join("dest");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&dest).unwrap();
+        fs::write(source.join("important.bin"), b"KEEP").unwrap();
+        let target = dest.join("source");
+        let error = move_folder_across_volumes(
+            &source,
+            &target,
+            &dest,
+            &AtomicBool::new(false),
+            &|_| {},
+            |_| Err("Cestino disabilitato".into()),
+        )
+        .unwrap_err();
+        assert!(error.published);
+        assert!(error.contains("Cestino disabilitato"));
+        assert_eq!(fs::read(source.join("important.bin")).unwrap(), b"KEEP");
+        assert_eq!(fs::read(target.join("important.bin")).unwrap(), b"KEEP");
+
+        let before = MoveFailure::before("Annullato");
+        assert!(!before.published);
+        assert!(before.contains("Annullato"));
+    }
+
+    #[test]
+    fn stop_preflight_detects_duplicate_names_before_any_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let a = root.path().join("folder_a");
+        let b = root.path().join("folder_b");
+        let dest = root.path().join("destination");
+        fs::create_dir(&a).unwrap();
+        fs::create_dir(&b).unwrap();
+        fs::create_dir(&dest).unwrap();
+        let first = a.join("identical.txt");
+        let second = b.join("identical.txt");
+        fs::write(&first, b"FIRST").unwrap();
+        fs::write(&second, b"SECOND").unwrap();
+        let result = execute(
+            vec![first.clone(), second.clone()],
+            dest.clone(),
+            false,
+            ConflictPolicy::Stop,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(result.contains("Conflitto nel batch"));
+        assert!(!dest.join("identical.txt").exists());
+        assert_eq!(fs::read(first).unwrap(), b"FIRST");
+        assert_eq!(fs::read(second).unwrap(), b"SECOND");
+    }
+
+    #[test]
+    fn mixed_batch_reports_skips_failures_and_unprocessed_items() {
+        let root = tempfile::tempdir().unwrap();
+        let dest = root.path().join("dest");
+        fs::create_dir(&dest).unwrap();
+        let kept = root.path().join("kept.txt");
+        let missing = root.path().join("missing.txt");
+        let skipped = root.path().join("skipped.txt");
+        fs::write(&kept, b"copy").unwrap();
+        fs::write(&skipped, b"skip").unwrap();
+        fs::write(dest.join("skipped.txt"), b"existing").unwrap();
+        let result = execute(
+            vec![skipped, missing, kept.clone()],
+            dest.clone(),
+            false,
+            ConflictPolicy::KeepBoth,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(result.contains("Completati 2/3"), "{result}");
+        assert!(result.contains("falliti 1"), "{result}");
+        assert!(result.contains("non elaborati 0"), "{result}");
+        assert_eq!(fs::read(dest.join("kept.txt")).unwrap(), b"copy");
+    }
+
+    #[test]
     fn cross_volume_recycle_failure_reports_both_copies_without_rollback() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("source");

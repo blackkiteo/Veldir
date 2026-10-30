@@ -20,10 +20,16 @@ struct MoveFailure {
 }
 impl MoveFailure {
     fn before(message: impl Into<String>) -> Self {
-        Self { message: message.into(), published: false }
+        Self {
+            message: message.into(),
+            published: false,
+        }
     }
     fn after(message: impl Into<String>) -> Self {
-        Self { message: message.into(), published: true }
+        Self {
+            message: message.into(),
+            published: true,
+        }
     }
     #[cfg(test)]
     fn contains(&self, needle: &str) -> bool {
@@ -31,10 +37,14 @@ impl MoveFailure {
     }
 }
 impl From<String> for MoveFailure {
-    fn from(value: String) -> Self { Self::before(value) }
+    fn from(value: String) -> Self {
+        Self::before(value)
+    }
 }
 impl From<&str> for MoveFailure {
-    fn from(value: &str) -> Self { Self::before(value) }
+    fn from(value: &str) -> Self {
+        Self::before(value)
+    }
 }
 impl std::fmt::Display for MoveFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -126,12 +126,63 @@ pub fn files_from_explorer() -> Result<Vec<PathBuf>, String> {
     Err("La clipboard dei file di Esplora è disponibile solo su Windows".into())
 }
 
+/// Build the exact DROPFILES payload used for CF_HDROP. This is kept separate
+/// from Win32 clipboard ownership, so layout and Unicode can be tested without
+/// changing the clipboard of the build runner or the user's desktop.
+#[cfg(windows)]
+fn encode_dropfiles(paths: &[PathBuf]) -> Result<Vec<u8>, String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    if paths.is_empty() {
+        return Err("Nessun file selezionato".into());
+    }
+    if paths.len() > 500 {
+        return Err("Esporta al massimo 500 percorsi".into());
+    }
+    let mut wide_paths: Vec<Vec<u16>> = Vec::with_capacity(paths.len());
+    let mut units: usize = 1; // final extra NUL for MULTI_SZ
+    for path in paths {
+        if !path.exists() {
+            return Err(format!("Sorgente non disponibile: {}", path.display()));
+        }
+        // Explorer may run with a different current directory.
+        let absolute = path.canonicalize().map_err(|e| e.to_string())?;
+        let wide: Vec<u16> = absolute.as_os_str().encode_wide().collect();
+        if wide.is_empty() || wide.contains(&0) {
+            return Err("Percorso Windows non valido".into());
+        }
+        units = units
+            .checked_add(wide.len() + 1)
+            .ok_or("Troppe informazioni nella clipboard")?;
+        wide_paths.push(wide);
+    }
+    let bytes = 20usize
+        .checked_add(units.checked_mul(2).ok_or("Percorsi troppo lunghi")?)
+        .ok_or("Percorsi troppo lunghi")?;
+    if bytes > 4 * 1024 * 1024 {
+        return Err("Percorsi selezionati troppo lunghi".into());
+    }
+    // DROPFILES = POINT(8), pFiles(4), fNC(4), fWide(4).
+    // Use little-endian bytes and NUL-initialization for the UTF-16 MULTI_SZ.
+    let mut data = vec![0u8; bytes];
+    data[..4].copy_from_slice(&20u32.to_le_bytes());
+    data[16..20].copy_from_slice(&1u32.to_le_bytes());
+    let mut cursor = 20;
+    for wide in wide_paths {
+        for unit in wide {
+            data[cursor..cursor + 2].copy_from_slice(&unit.to_le_bytes());
+            cursor += 2;
+        }
+        cursor += 2; // terminating NUL after each path
+    }
+    Ok(data)
+}
+
 /// Export normal existing paths to the system clipboard as CF_HDROP, so Explorer
 /// can paste them. This only advertises COPIES; no "preferred drop effect" of MOVE.
 #[cfg(windows)]
 pub fn copy_files_to_explorer(paths: &[PathBuf]) -> Result<(), String> {
     use std::ffi::c_void;
-    use std::os::windows::ffi::OsStrExt;
     use std::ptr::{copy_nonoverlapping, null_mut};
 
     #[link(name = "user32")]
@@ -150,36 +201,7 @@ pub fn copy_files_to_explorer(paths: &[PathBuf]) -> Result<(), String> {
         fn GlobalFree(handle: *mut c_void) -> *mut c_void;
     }
 
-    if paths.is_empty() {
-        return Err("Nessun file selezionato".into());
-    }
-    if paths.len() > 500 {
-        return Err("Esporta al massimo 500 percorsi".into());
-    }
-    let mut names: Vec<Vec<u16>> = Vec::new();
-    let mut units: usize = 1; // final extra NUL for MULTI_SZ
-    for path in paths {
-        if !path.exists() {
-            return Err(format!("Sorgente non disponibile: {}", path.display()));
-        }
-        // Use an absolute path: Explorer may be running with a different working directory.
-        let absolute = path.canonicalize().map_err(|e| e.to_string())?;
-        let name: Vec<u16> = absolute.as_os_str().encode_wide().collect();
-        if name.is_empty() || name.contains(&0) {
-            return Err("Percorso Windows non valido".into());
-        }
-        units = units
-            .checked_add(name.len() + 1)
-            .ok_or("Troppe informazioni nella clipboard")?;
-        names.push(name);
-    }
-    // DROPFILES: 20-byte struct, with DWORD pFiles=20 and BOOL fWide=1.
-    let bytes = 20usize
-        .checked_add(units.checked_mul(2).ok_or("Percorsi troppo lunghi")?)
-        .ok_or("Percorsi troppo lunghi")?;
-    if bytes > 4 * 1024 * 1024 {
-        return Err("Percorsi selezionati troppo lunghi".into());
-    }
+    let payload = encode_dropfiles(paths)?;
 
     struct Allocation(*mut c_void);
     impl Drop for Allocation {
@@ -200,7 +222,7 @@ pub fn copy_files_to_explorer(paths: &[PathBuf]) -> Result<(), String> {
         }
     }
     // GMEM_MOVEABLE|GMEM_ZEROINIT is required by SetClipboardData.
-    let hglobal = unsafe { GlobalAlloc(0x0002 | 0x0040, bytes) };
+    let hglobal = unsafe { GlobalAlloc(0x0002 | 0x0040, payload.len()) };
     if hglobal.is_null() {
         return Err("Memoria clipboard insufficiente".into());
     }
@@ -210,14 +232,7 @@ pub fn copy_files_to_explorer(paths: &[PathBuf]) -> Result<(), String> {
         return Err("Impossibile preparare la clipboard".into());
     }
     unsafe {
-        // Zeroed memory already contains POINT(0,0), fNC=false and terminator.
-        (ptr as *mut u32).write_unaligned(20);
-        (ptr.add(16) as *mut i32).write_unaligned(1); // wide UTF-16
-        let mut offset = 20usize;
-        for name in names {
-            copy_nonoverlapping(name.as_ptr() as *const u8, ptr.add(offset), name.len() * 2);
-            offset += (name.len() + 1) * 2; // zero terminator from GMEM_ZEROINIT
-        }
+        copy_nonoverlapping(payload.as_ptr(), ptr, payload.len());
         GlobalUnlock(hglobal);
     }
     // Clipboard's new owner must be a real window, not NULL.

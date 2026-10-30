@@ -45,7 +45,10 @@ pub fn query(path: &Path) -> Result<DiskSpace, String> {
             std::io::Error::last_os_error()
         ));
     }
-    let space = DiskSpace { available, capacity };
+    let space = DiskSpace {
+        available,
+        capacity,
+    };
     if !space.valid() {
         return Err("L'unità ha restituito una capacità non valida".into());
     }
@@ -63,10 +66,13 @@ mod tests {
 
     #[test]
     fn quota_aware_free_space_cannot_exceed_accessible_capacity() {
-        assert!(DiskSpace { available: 0, capacity: 4096 }.valid());
-        assert!(DiskSpace { available: 4096, capacity: 4096 }.valid());
-        assert!(!DiskSpace { available: 4097, capacity: 4096 }.valid());
-        assert!(!DiskSpace { available: 0, capacity: 0 }.valid());
+        fn valid(available: u64, capacity: u64) -> bool {
+            DiskSpace { available, capacity }.valid()
+        }
+        assert!(valid(0, 4096));
+        assert!(valid(4096, 4096));
+        assert!(!valid(4097, 4096));
+        assert!(!valid(0, 0));
     }
 
     #[cfg(windows)]

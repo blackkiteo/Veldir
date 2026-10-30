@@ -9,6 +9,13 @@ Veldir è un progetto **open source con licenza MIT**, indipendente e non affili
 Prima di contribuire, consultare la [checklist della Pull Request](.github/pull_request_template.md). Vulnerabilità e credenziali vanno segnalate privatamente secondo [SECURITY.md](SECURITY.md), **mai nelle issue pubbliche**. Per la protezione del ramo principale e le impostazioni a carico del proprietario, consultare [la checklist per il repository pubblico](docs/PUBLIC_REPOSITORY_CHECKLIST.md). Le scansioni automatiche non escludono ogni rischio.
 
 
+## Spazio disponibile delle unità (nuova funzione di sviluppo)
+- Nella barra laterale **UNITÀ**, accanto a C:\\, D:\\ e agli eventuali dischi di rete mappati, appare la **quantità di spazio libero accessibile all'utente** (per esempio `C:\\ · 120.5 GB liberi`).
+- Valori ottenuti tramite API Windows `GetDiskFreeSpaceExW`, con letture in background indipendenti: un'unità di rete non raggiungibile non blocca la GUI né gli altri volumi.
+- Passando il mouse si vedono spazio disponibile e capacità complessiva. Unità non interrogabili mostrano `n/d`, senza valori inventati; `…` indica caricamento.
+- Aggiornamento periodico indicativamente ogni 60 secondi mentre la barra laterale è visibile e aggiornamento immediato con **F5** (salvo interrogazioni ancora in corso).
+- La barra laterale scorre verticalmente se sono presenti molti dischi o preferiti. Il comportamento grafico richiede collaudo su Windows.
+
 ## Dimensione cartelle (nuova funzione di sviluppo)
 - La colonna **Dimensione** calcola ora anche il contenuto delle cartelle, sommando ricorsivamente i byte dei file regolari; una cartella vuota mostra 0 B.
 - Le misure vengono elaborate **in background**, solamente per le cartelle visibili, con massimo **2 scansioni contemporanee** e risultati in cache. Non bloccano l'apertura della cartella.

@@ -381,6 +381,10 @@ impl InternalClipboard {
             _ => false,
         }
     }
+
+    fn should_paste_locally(&self, current: Option<u32>) -> bool {
+        self.is_current(current) && (self.cut || !self.exported_to_windows || current.is_some())
+    }
 }
 
 /// egui-winit 0.37 turns Ctrl+C/X into Copy/Cut and Ctrl+V into Paste(text).
@@ -1702,10 +1706,11 @@ impl Veldir {
         // Ctrl+X in Veldir must *not* move stale files after the user copies
         // another file or text in Explorer or any other application.
         let sequence = crate::shell_clipboard::sequence_number();
-        if self.clipboard.as_ref().is_some_and(|clip| {
-            clip.is_current(sequence)
-                && (clip.cut || !clip.exported_to_windows || sequence.is_some())
-        }) {
+        if self
+            .clipboard
+            .as_ref()
+            .is_some_and(|clip| clip.should_paste_locally(sequence))
+        {
             self.paste();
             return;
         }
@@ -3713,6 +3718,62 @@ mod tests {
             self.0.remove(k);
         }
         fn flush(&mut self) {}
+    }
+
+    #[test]
+    fn local_cut_is_invalidated_when_another_app_changes_the_clipboard() {
+        use super::InternalClipboard;
+        let cut = InternalClipboard {
+            sources: vec![std::path::PathBuf::from("old.txt")],
+            cut: true,
+            exported_to_windows: false,
+            windows_sequence: Some(100),
+        };
+        assert!(cut.should_paste_locally(Some(100)));
+        assert!(!cut.should_paste_locally(Some(101)));
+        assert!(!cut.should_paste_locally(None));
+    }
+
+    #[test]
+    fn local_copy_is_not_reused_after_external_copy_even_for_same_filename() {
+        use super::InternalClipboard;
+        let copy = InternalClipboard {
+            sources: vec![std::path::PathBuf::from("old.txt")],
+            cut: false,
+            exported_to_windows: true,
+            windows_sequence: Some(120),
+        };
+        assert!(copy.should_paste_locally(Some(120)));
+        assert!(!copy.should_paste_locally(Some(121)));
+        // When the sequence API is unavailable, read the Windows file list.
+        assert!(!copy.should_paste_locally(None));
+    }
+
+    #[test]
+    fn failed_windows_export_preserves_local_copy_only_until_clipboard_changes() {
+        use super::InternalClipboard;
+        let copy = InternalClipboard {
+            sources: vec![std::path::PathBuf::from("report.txt")],
+            cut: false,
+            exported_to_windows: false,
+            windows_sequence: Some(500),
+        };
+        assert!(copy.should_paste_locally(Some(500)));
+        assert!(!copy.should_paste_locally(Some(501)));
+    }
+
+    #[test]
+    fn stray_plain_v_key_release_cannot_start_a_file_transfer() {
+        use super::FileClipboardKeys;
+        let mut keys = FileClipboardKeys::default();
+        let release = egui::Event::Key {
+            key: egui::Key::V,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        assert_eq!(keys.read(&[release], false), None);
     }
 
     #[test]

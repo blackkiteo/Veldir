@@ -96,6 +96,18 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 | PERF-01 | Apri cartella di 5.000 file | UI reattiva, misurare tempi |
 | PERF-02 | Registra RAM/CPU a riposo | Numeri misurati, niente stime |
 
+## Prima fase 0.11: spostamento file fra unità (solo con dati sintetici)
+**Usare due volumi diversi realmente scrivibili**, per esempio C: e una chiavetta USB. Non eseguire questi test su file personali: la funzione può eliminare la sorgente dopo la verifica.
+
+| ID | Procedura | Risultato atteso |
+| --- | --- | --- |
+| MOVE-X01 | Sposta un file di prova da 10 MiB da C: a USB/altro disco | Destinazione identica byte per byte; sorgente rimossa solo al termine |
+| MOVE-X02 | Sposta più file di prova con Stop, Salta e Conserva entrambi | Nessuna sovrascrittura, riepilogo chiaro, nessun elemento perso |
+| MOVE-X03 | Avvia spostamento file di 1–2 GiB su disco diverso e premi Annulla durante la copia | Sorgente integra, nessun file destinazione pubblicato |
+| MOVE-X04 | Simula cartella destinazione non scrivibile o file sorgente bloccato | Errore esplicito; sorgente conservata, nessuna destinazione parziale |
+| MOVE-X05 | Sposta una cartella, con file di prova, tra dischi differenti | Funzione ancora non supportata: errore e nessuna modifica |
+| MOVE-X06 | Controlla un file con nome Unicode; poi modifica la sorgente mentre la copia è in corso | Unicode integro; se la sorgente cambia, operazione prudenzialmente interrotta senza eliminarla |
+
 ## Verifiche spazio disponibile delle unità (nuova implementazione)
 | ID | Procedura | Risultato atteso |
 | --- | --- | --- |

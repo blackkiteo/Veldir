@@ -264,6 +264,74 @@ pub fn copy_files_to_explorer(_paths: &[PathBuf]) -> Result<(), String> {
 mod tests {
     use super::*;
     #[test]
+    fn utf16_dropfiles_are_accepted_by_native_windows_drag_query_file() {
+        use std::ffi::{OsString, c_void};
+        use std::os::windows::ffi::OsStringExt;
+        use std::ptr::{copy_nonoverlapping, null_mut};
+
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GlobalAlloc(flags: u32, bytes: usize) -> *mut c_void;
+            fn GlobalLock(handle: *mut c_void) -> *mut c_void;
+            fn GlobalUnlock(handle: *mut c_void) -> i32;
+            fn GlobalFree(handle: *mut c_void) -> *mut c_void;
+        }
+        #[link(name = "shell32")]
+        unsafe extern "system" {
+            fn DragQueryFileW(hdrop: *mut c_void, index: u32, buf: *mut u16, chars: u32) -> u32;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("report - à - 漢字.txt");
+        let second = directory.path().join("second file.txt");
+        std::fs::write(&first, "one").unwrap();
+        std::fs::write(&second, "two").unwrap();
+
+        let data = encode_dropfiles(&[first.clone(), second.clone()]).unwrap();
+        assert_eq!(&data[..4], &20u32.to_le_bytes());
+        assert_eq!(&data[16..20], &1u32.to_le_bytes());
+        assert_eq!(&data[data.len() - 4..], &[0, 0, 0, 0]);
+
+        // Use a movable HGLOBAL just like SetClipboardData would, but do NOT
+        // open or mutate the desktop clipboard while running automated tests.
+        let handle = unsafe { GlobalAlloc(0x0002 | 0x0040, data.len()) };
+        assert!(!handle.is_null());
+        let locked = unsafe { GlobalLock(handle) };
+        assert!(!locked.is_null());
+        unsafe { copy_nonoverlapping(data.as_ptr(), locked.cast(), data.len()) };
+
+        let count = unsafe { DragQueryFileW(locked, u32::MAX, null_mut(), 0) };
+        let mut decoded = Vec::new();
+        for index in 0..count {
+            let size = unsafe { DragQueryFileW(locked, index, null_mut(), 0) };
+            let mut buffer = vec![0u16; size as usize + 1];
+            let written =
+                unsafe { DragQueryFileW(locked, index, buffer.as_mut_ptr(), size + 1) };
+            decoded.push(PathBuf::from(OsString::from_wide(&buffer[..written as usize])));
+        }
+        unsafe {
+            GlobalUnlock(handle);
+            GlobalFree(handle);
+        }
+        assert_eq!(count, 2);
+        assert_eq!(decoded, vec![first.canonicalize().unwrap(), second.canonicalize().unwrap()]);
+        assert_eq!(std::fs::read_to_string(first).unwrap(), "one");
+        assert_eq!(std::fs::read_to_string(second).unwrap(), "two");
+    }
+
+    #[test]
+    fn dropfiles_export_rejects_empty_missing_and_too_many_paths() {
+        assert!(encode_dropfiles(&[]).is_err());
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.txt");
+        assert!(encode_dropfiles(&[missing]).is_err());
+
+        let existing = dir.path().join("real.txt");
+        std::fs::write(&existing, "ok").unwrap();
+        assert!(encode_dropfiles(&vec![existing; 501]).is_err());
+    }
+
+    #[test]
     fn export_rejects_empty_paths_without_modifying_clipboard() {
         assert!(copy_files_to_explorer(&[]).is_err());
     }

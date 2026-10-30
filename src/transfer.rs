@@ -11,6 +11,36 @@ pub enum ConflictPolicy {
     Skip,
     KeepBoth,
 }
+/// Internal error preserves whether a verified copy has already been
+/// published, so transfer reports can distinguish partial success from failure.
+#[derive(Debug)]
+struct MoveFailure {
+    message: String,
+    published: bool,
+}
+impl MoveFailure {
+    fn before(message: impl Into<String>) -> Self {
+        Self { message: message.into(), published: false }
+    }
+    fn after(message: impl Into<String>) -> Self {
+        Self { message: message.into(), published: true }
+    }
+    #[cfg(test)]
+    fn contains(&self, needle: &str) -> bool {
+        self.message.contains(needle)
+    }
+}
+impl From<String> for MoveFailure {
+    fn from(value: String) -> Self { Self::before(value) }
+}
+impl From<&str> for MoveFailure {
+    fn from(value: &str) -> Self { Self::before(value) }
+}
+impl std::fmt::Display for MoveFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
 /// Only treat the OS-level "different volume" result as authorization
 /// to copy-verify-delete. Permissions, locks and all other rename failures
 /// must NOT be silently downgraded to a copy.
@@ -195,7 +225,7 @@ fn move_folder_across_volumes(
     cancelled: &AtomicBool,
     notify: &dyn Fn(Progress),
     recycle: impl FnOnce(&Path) -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<(), MoveFailure> {
     let snapshot = snapshot_tree(source)?;
     if !snapshot.get(Path::new("")).is_some_and(|s| s.is_directory) {
         return Err("Sorgente non è una cartella".into());
@@ -226,18 +256,18 @@ fn move_folder_across_volumes(
     fs_ops::rename_no_replace(&staged_folder, target)
         .map_err(|e| format!("Impossibile pubblicare cartella; sorgente conservata: {e}"))?;
     if cancelled.load(Ordering::Relaxed) || snapshot_tree(source).ok().as_ref() != Some(&snapshot) {
-        return Err(format!(
+        return Err(MoveFailure::after(format!(
             "Copia pubblicata in {}, ma sorgente {} conservata (annullamento o modifiche esterne)",
             target.display(),
             source.display()
-        ));
+        )));
     }
     recycle(source).map_err(|e| {
-        format!(
+        MoveFailure::after(format!(
             "Cartella copiata e verificata in {}, ma impossibile spostare l'originale {} nel Cestino: {e}. Verifica entrambe le posizioni",
             target.display(),
             source.display()
-        )
+        ))
     })
 }
 
@@ -250,11 +280,11 @@ fn move_one_with_rename(
     cancelled: &AtomicBool,
     notify: &dyn Fn(Progress),
     rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
-) -> Result<(), String> {
+) -> Result<(), MoveFailure> {
     match rename(source, target) {
         Ok(()) => return Ok(()),
         Err(error) if !is_cross_device(&error) => {
-            return Err(format!("Spostamento non riuscito: {error}"));
+            return Err(MoveFailure::before(format!("Spostamento non riuscito: {error}")));
         }
         Err(_) => {}
     }
@@ -303,18 +333,18 @@ fn move_one_with_rename(
     // Once published, never delete the destination on cleanup failure: it is
     // a verified full copy. Report both paths so the user can reconcile them.
     if cancelled.load(Ordering::Relaxed) || !unchanged_source(source, &snapshot) {
-        return Err(format!(
+        return Err(MoveFailure::after(format!(
             "Copia completa pubblicata in {}, ma sorgente {} conservata (annullamento o modifica esterna)",
             target.display(),
             source.display()
-        ));
+        )));
     }
     fs::remove_file(source).map_err(|e| {
-        format!(
+        MoveFailure::after(format!(
             "Copia verificata in {}, ma impossibile eliminare la sorgente {}: {e}. Entrambe le copie possono essere presenti",
             target.display(),
             source.display()
-        )
+        ))
     })
 }
 

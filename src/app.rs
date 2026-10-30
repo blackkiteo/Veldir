@@ -367,6 +367,20 @@ struct InternalClipboard {
     cut: bool,
     /// True only if the same file list was published to the Windows clipboard.
     exported_to_windows: bool,
+    /// Clipboard generation at the moment of the local copy/cut.
+    windows_sequence: Option<u32>,
+}
+
+impl InternalClipboard {
+    fn is_current(&self, current: Option<u32>) -> bool {
+        match (self.windows_sequence, current) {
+            (Some(saved), Some(now)) => saved == now,
+            // On systems without sequence support, preserve local cut/copy.
+            (None, None) => true,
+            // A missing generation on only one side cannot prove ownership.
+            _ => false,
+        }
+    }
 }
 
 /// egui-winit 0.37 turns Ctrl+C/X into Copy/Cut and Ctrl+V into Paste(text).
@@ -430,10 +444,12 @@ impl FileClipboardKeys {
                 egui::Event::Key {
                     key: egui::Key::V,
                     pressed: false,
+                    modifiers,
                     ..
                 } => {
-                    if !self.v_down && !self.v_paste_seen && action.is_none() {
+                    if modifiers.command && !self.v_down && !self.v_paste_seen && action.is_none() {
                         // The integration swallowed Ctrl+V because CF_HDROP has no text.
+                        // A stray bare V key-up must never trigger a file transfer.
                         action = Some(if shift { Action::Import } else { Action::Paste });
                     }
                     self.v_down = false;
@@ -1623,6 +1639,7 @@ impl Veldir {
             sources: sources.clone(),
             cut,
             exported_to_windows: false,
+            windows_sequence: crate::shell_clipboard::sequence_number(),
         });
         if cut {
             // Cut stays local until a confirmed move. Never publish a MOVE intent to Explorer.
@@ -1632,6 +1649,7 @@ impl Veldir {
                 Ok(()) => {
                     if let Some(clip) = self.clipboard.as_mut() {
                         clip.exported_to_windows = true;
+                        clip.windows_sequence = crate::shell_clipboard::sequence_number();
                     }
                     self.status = format!(
                         "{} elementi copiati: clipboard Veldir e Windows",
@@ -1680,22 +1698,33 @@ impl Veldir {
         if self.busy || !matches!(self.dialog, Dialog::None) {
             return;
         }
-        // Ctrl+V uses the current Windows file clipboard. This also makes files
-        // copied in Explorer work without the old Ctrl+Shift+V requirement.
-        // A local Cut remains internal, because it never exports a MOVE intent.
-        if self.clipboard.as_ref().is_some_and(|clip| clip.cut) {
+        // Prefer the most recently copied clipboard content. In particular,
+        // Ctrl+X in Veldir must *not* move stale files after the user copies
+        // another file or text in Explorer or any other application.
+        let sequence = crate::shell_clipboard::sequence_number();
+        if self.clipboard.as_ref().is_some_and(|clip| {
+            clip.is_current(sequence)
+                && (clip.cut || !clip.exported_to_windows || sequence.is_some())
+        }) {
             self.paste();
             return;
         }
+        // If Windows does not expose a sequence number, inspect its file list
+        // and only treat a matching, exported copy as the local clipboard.
         match crate::shell_clipboard::files_from_explorer() {
             Ok(paths) => {
                 let same_as_local = self.clipboard.as_ref().is_some_and(|clip| {
-                    clip.sources.len() == paths.len()
+                    !clip.cut
+                        && clip.exported_to_windows
+                        && clip.is_current(sequence)
+                        && clip.sources.len() == paths.len()
                         && paths.iter().all(|path| clip.sources.contains(path))
                 });
                 if same_as_local {
                     self.paste();
                 } else {
+                    // Explorer may have a Cut intent, but this is always a COPY
+                    // inside Veldir until the user explicitly confirms it.
                     self.dialog = Dialog::ExternalDrop {
                         sources: paths,
                         destination: self.current().path.clone(),
@@ -1703,16 +1732,7 @@ impl Veldir {
                 }
             }
             Err(error) => {
-                if self
-                    .clipboard
-                    .as_ref()
-                    .is_some_and(|clip| !clip.exported_to_windows)
-                {
-                    // Windows clipboard export can fail; preserve local copy.
-                    self.paste();
-                } else {
-                    self.status = format!("Nessun file nella clipboard Windows: {error}");
-                }
+                self.status = format!("Nessun file nella clipboard Windows: {error}");
             }
         }
     }
@@ -2261,13 +2281,16 @@ impl Veldir {
                     }
                     if ui
                         .add_enabled(
-                            !self.busy && self.clipboard.is_some(),
+                            !self.busy
+                                && (self.clipboard.as_ref().is_some_and(|clip| {
+                                    clip.is_current(crate::shell_clipboard::sequence_number())
+                                }) || crate::shell_clipboard::contains_files()),
                             egui::Button::new("Incolla"),
                         )
                         .on_hover_text("Ctrl+V · file da Veldir o Esplora Windows")
                         .clicked()
                     {
-                        self.paste();
+                        self.paste_from_keyboard();
                     }
                     if ui
                         .button("Cerca")

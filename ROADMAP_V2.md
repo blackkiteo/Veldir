@@ -216,6 +216,11 @@ Aggiunto nei sorgenti un calcolo ricorsivo della dimensione delle cartelle (solo
 
 La sidebar elenca unità locali e di rete mappate: implementata una prima lettura asincrona Windows dei byte disponibili all'utente per volume, con capacità totale nel tooltip, valori `n/d` per unità non disponibili, refresh con F5 e periodico, senza blocco del thread UI. Aggiunti test del wrapper Win32 e piano di collaudo DRIVE-01…07. **Implementazione non equivalente a collaudo GUI sulla macchina dell'utente.**
 
+## M1, primo incremento (30/10/2026): move tra volumi per file regolari
+È stato implementato nel **ramo draft** il fallback per `ERROR_NOT_SAME_DEVICE`: copia in staging, controllo byte per byte, pubblicazione senza overwrite ed eliminazione della sorgente *solo dopo* la verifica e solo se risulta invariata. Annullamenti/errori prima del commit lasciano intatta la sorgente; gli errori successivi al commit vengono riportati come esiti parziali, senza nascondere l'eventuale doppia copia.
+
+**Parzialmente implementato / non collaudato su volumi distinti.** Le cartelle tra volumi restano escluse, così come ACL/metadati speciali, undo e piena atomicità inter-volume. I criteri M1 V2-011, V2-012, V2-014, V2-015 e V2-018 restano *aperti* fino a prova reale e copertura dei casi limite. Casi di collaudo `MOVE-X01…X06`.
+
 ## 7. Ordine consigliato delle prossime azioni
 
 1. **Subito:** confermare su Windows reale l'ultima build `0.10.0-dev`, compilata con 68 test, e registrare i risultati nell'issue #13.

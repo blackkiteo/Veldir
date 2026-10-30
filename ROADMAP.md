@@ -4,9 +4,9 @@ Versione di integrazione: 0.10.0-dev. Nessuna fase è considerata certificata so
 
 | Fase | Codice implementato | Verifiche ancora aperte |
 |---|---|---|
-| Consolidamento | Restyling, viewport, pannelli, filtri adattivi, errori recuperabili | Collaudo GUI completo e revisione PR #11 |
-| Build | Cargo.lock, --locked, fmt --check, cache CI, stop build duplicate push/PR, build ID, checksum e metadati | Verificare pipeline MSVC e artifact finale |
-| Elenco/tastiera | Colonne opzionali/ridimensionabili e persistenti; frecce/Home/Fine/Pagina, Maiusc, typeahead, scorrimento alla riga | Mouse, DPI e screen reader |
+| Consolidamento | Restyling, viewport, pannelli, filtri adattivi, errori recuperabili; PR #11 integrata in main | Collaudo GUI completo su Windows reale |
+| Build | Cargo.lock, --locked, fmt --check, cache CI, stop build duplicate push/PR, build ID, checksum e metadati; CI Windows con 60 test + benchmark e ZIP verificati prima del consolidamento clipboard | Rieseguire la CI sul commit finale della candidata 1.0 |
+| Elenco/tastiera | Colonne opzionali/ridimensionabili e persistenti; frecce/Home/Fine/Pagina, Maiusc, typeahead, scorrimento alla riga; gestione eventi nativi Ctrl+C/X/V, priorità clipboard Windows e pulsante Incolla coerente | Mouse, DPI, screen reader e test pratico della clipboard tra Veldir ed Esplora |
 | Operazioni | Conflitti Stop/Skip/KeepBoth, staging, riepiloghi per elemento, storico limitato, avanzamento e rinomina con anteprima | Spazio esaurito, disconnessione, permessi e collaudo interattivo; stesso volume per spostare |
 | Sessioni | Schede duplicabili/riordinabili/riapribili, elenco schede, pannello opposto, sessione opzionale, percorsi mancanti conservati | Riavvio su rete e unità rimovibili, migrazione su installazioni reali |
 | Ricerca | Ambito editabile, filtro/ordine risultati, cancel, risultati precedenti conservati, apri posizione e seleziona | Prove con condivisioni lente e file spostati durante la ricerca |
@@ -23,3 +23,9 @@ Windows, Rust 1.95 GNU, cartelle temporanee appena create, file piccoli, tre let
 
 ## Completamenti di consolidamento
 Recupero impostazioni da backup valido e avviso sui valori predefiniti, indicazione del file corrente, azioni contestuali sulle cartelle, contrasto secondario e accento verificati nei due temi. L’albero accessibile Windows della build locale espone pulsanti, campi e righe; cattura e geometria per i clic restano indisponibili (timeout anche dopo recupero). Non è una validazione di screen reader o interazioni GUI.
+
+## Stabilizzazione dopo i primi test della build portabile (30 ottobre 2026)
+- La prova sul PC dell'utente ha identificato il mancato funzionamento di Ctrl+C/Ctrl+V nella prima build: corretti gli eventi clipboard che egui-winit produce al posto dei normali keydown.
+- Migliorata la priorità degli appunti: un Ctrl+X locale non prevale su nuovi appunti di Esplora o su testo copiato altrove; un Ctrl+C interno la cui esportazione Windows fallisce rimane disponibile finché non cambia la generazione degli appunti.
+- Il pulsante Incolla può importare anche un elenco di file CF_HDROP già presente in Windows, senza dover prima selezionare file in Veldir. I trasferimenti restano soggetti a conferma e a politiche senza sovrascrittura.
+- Aggiunti test di regressione per la validità del taglio locale e il rilascio del tasto V; collaudo interattivo Windows ancora da documentare. **Nessuna approvazione della release 1.0 implicita**.

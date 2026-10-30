@@ -1,8 +1,8 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 mod app;
 mod filters;
-mod folder_watch;
 mod folder_size;
+mod folder_watch;
 mod fs_ops;
 mod image_view;
 mod native_icons;

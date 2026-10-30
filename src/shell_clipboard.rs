@@ -334,6 +334,10 @@ mod tests {
         assert!(!locked.is_null());
         unsafe { copy_nonoverlapping(data.as_ptr(), locked.cast(), data.len()) };
 
+        assert_eq!(
+            decode_hdrop(locked).unwrap(),
+            vec![first.canonicalize().unwrap(), second.canonicalize().unwrap()]
+        );
         let count = unsafe { DragQueryFileW(locked, u32::MAX, null_mut(), 0) };
         let mut decoded = Vec::new();
         for index in 0..count {
@@ -358,6 +362,52 @@ mod tests {
         );
         assert_eq!(std::fs::read_to_string(first).unwrap(), "one");
         assert_eq!(std::fs::read_to_string(second).unwrap(), "two");
+    }
+
+    #[test]
+    fn clipboard_import_rejects_entire_batch_if_second_file_disappeared() {
+        use std::ffi::c_void;
+        use std::ptr::copy_nonoverlapping;
+
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GlobalAlloc(flags: u32, bytes: usize) -> *mut c_void;
+            fn GlobalLock(handle: *mut c_void) -> *mut c_void;
+            fn GlobalUnlock(handle: *mut c_void) -> i32;
+            fn GlobalFree(handle: *mut c_void) -> *mut c_void;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("keep.txt");
+        let second = directory.path().join("removed.txt");
+        std::fs::write(&first, "intact").unwrap();
+        std::fs::write(&second, "temporary").unwrap();
+
+        // Simulate Explorer copying two files, then one of them disappearing
+        // before Veldir handles Ctrl+V. Do not touch the Windows clipboard.
+        let data = encode_dropfiles(&[first.clone(), second.clone()]).unwrap();
+        std::fs::remove_file(&second).unwrap();
+
+        let handle = unsafe { GlobalAlloc(0x0002 | 0x0040, data.len()) };
+        assert!(!handle.is_null());
+        let locked = unsafe { GlobalLock(handle) };
+        assert!(!locked.is_null());
+        unsafe { copy_nonoverlapping(data.as_ptr(), locked.cast(), data.len()) };
+
+        let result = decode_hdrop(locked);
+        unsafe {
+            GlobalUnlock(handle);
+            GlobalFree(handle);
+        }
+        let error = result.unwrap_err();
+        assert!(error.contains("removed.txt"), "{error}");
+        assert!(error.contains("Nessun file importato"), "{error}");
+        assert_eq!(std::fs::read_to_string(first).unwrap(), "intact");
+    }
+
+    #[test]
+    fn null_dropfiles_pointer_returns_error() {
+        assert!(decode_hdrop(std::ptr::null_mut()).is_err());
     }
 
     #[test]

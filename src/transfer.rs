@@ -363,28 +363,34 @@ pub fn execute(
         return Err("Nessuna sorgente selezionata".into());
     }
     let total = sources.len();
-    let total_bytes = if cut {
-        0
-    } else {
-        sources
-            .iter()
-            .filter(|s| {
-                policy != ConflictPolicy::Skip
-                    || s.file_name()
-                        .is_some_and(|n| destination.join(n).symlink_metadata().is_err())
-            })
-            .filter_map(|s| fs_ops::tree_size(s).ok())
-            .fold(0u64, |sum, n| sum.saturating_add(n))
-    };
+    // Moving on one volume is instant. When Windows falls back to copying
+    // between volumes the byte progress must still have a real denominator.
+    let total_bytes = sources
+        .iter()
+        .filter(|s| {
+            policy != ConflictPolicy::Skip
+                || s.file_name()
+                    .is_some_and(|n| destination.join(n).symlink_metadata().is_err())
+        })
+        .filter_map(|s| fs_ops::tree_size(s).ok())
+        .fold(0u64, |sum, n| sum.saturating_add(n));
     let mut completed_bytes = 0u64;
     let mut done = 0;
     let mut skipped = 0;
     let mut errors = Vec::new();
+    let mut partials = Vec::new();
     let mut details = Vec::new();
     // Stop policy validates all conflicts before publishing the first file.
     if policy == ConflictPolicy::Stop {
+        let mut planned = std::collections::HashSet::new();
         for source in &sources {
             let name = source.file_name().ok_or("Nome sorgente non valido")?;
+            if !planned.insert(name.to_os_string()) {
+                return Err(format!(
+                    "Conflitto nel batch: {}. Nessun elemento trasferito.",
+                    name.to_string_lossy()
+                ));
+            }
             if destination.join(name).symlink_metadata().is_ok() {
                 return Err(format!(
                     "Conflitto: {}. Nessun elemento trasferito.",
@@ -410,14 +416,23 @@ pub fn execute(
             continue;
         }
         let target = if conflict {
-            unique_target(&destination, name.to_string_lossy().as_ref())?
+            match unique_target(&destination, name.to_string_lossy().as_ref()) {
+                Ok(path) => path,
+                Err(error) => {
+                    errors.push(format!("{}: {error}", source.display()));
+                    if policy == ConflictPolicy::Stop {
+                        break;
+                    }
+                    continue;
+                }
+            }
         } else {
             original
         };
         let result = if cut {
             let progress = |p: Progress| {
                 notify(Progress {
-                    done_items: done + skipped + errors.len(),
+                    done_items: done + skipped + errors.len() + partials.len(),
                     total_items: total,
                     done_bytes: completed_bytes.saturating_add(p.done_bytes),
                     total_bytes,
@@ -439,7 +454,7 @@ pub fn execute(
                 .map_err(|e| e.to_string())?;
             let progress = |p: Progress| {
                 notify(Progress {
-                    done_items: done + skipped + errors.len(),
+                    done_items: done + skipped + errors.len() + partials.len(),
                     total_items: total,
                     done_bytes: completed_bytes.saturating_add(p.done_bytes),
                     total_bytes,
@@ -461,14 +476,12 @@ pub fn execute(
                         .map_err(|e| e.to_string())
                 }
             })
+            .map_err(MoveFailure::before)
         };
         match result {
             Ok(_) => {
-                completed_bytes = completed_bytes.saturating_add(if cut {
-                    0
-                } else {
-                    fs_ops::tree_size(&source).unwrap_or(0)
-                });
+                completed_bytes =
+                    completed_bytes.saturating_add(fs_ops::tree_size(&target).unwrap_or(0));
                 done += 1;
                 details.push(format!(
                     "Completato: {} → {}",
@@ -477,34 +490,41 @@ pub fn execute(
                 ));
             }
             Err(error) => {
-                errors.push(format!("{}: {error}", source.display()));
+                if error.published {
+                    partials.push(format!(
+                        "PARZIALE: {} → {}: {error}",
+                        source.display(),
+                        target.display()
+                    ));
+                } else {
+                    errors.push(format!("{}: {error}", source.display()));
+                }
                 if policy == ConflictPolicy::Stop {
                     break;
                 }
             }
         }
         notify(Progress {
-            done_items: done + skipped + errors.len(),
+            done_items: done + skipped + errors.len() + partials.len(),
             total_items: total,
             done_bytes: completed_bytes,
             total_bytes,
         });
     }
+    let remaining = total.saturating_sub(done + skipped + partials.len() + errors.len());
     let summary = format!(
-        "Completati {done}/{total} · saltati {skipped} · errori {}
-{}
-{}",
+        "Completati {done}/{total} · parziali {} · saltati {skipped} · falliti {} · non elaborati {remaining}\n{}\n{}\n{}",
+        partials.len(),
         errors.len(),
-        details.join(
-            "
-"
-        ),
-        errors.join(
-            "
-"
-        )
+        details.join("\n"),
+        partials.join("\n"),
+        errors.join("\n")
     );
-    if errors.is_empty() && !cancelled.load(Ordering::Relaxed) {
+    if errors.is_empty()
+        && partials.is_empty()
+        && remaining == 0
+        && !cancelled.load(Ordering::Relaxed)
+    {
         Ok(summary)
     } else {
         Err(summary)

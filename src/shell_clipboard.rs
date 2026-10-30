@@ -336,7 +336,10 @@ mod tests {
 
         assert_eq!(
             decode_hdrop(locked).unwrap(),
-            vec![first.canonicalize().unwrap(), second.canonicalize().unwrap()]
+            vec![
+                first.canonicalize().unwrap(),
+                second.canonicalize().unwrap()
+            ]
         );
         let count = unsafe { DragQueryFileW(locked, u32::MAX, null_mut(), 0) };
         let mut decoded = Vec::new();

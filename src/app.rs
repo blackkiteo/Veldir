@@ -298,6 +298,10 @@ impl Tab {
 
 enum Message {
     DrivesLoaded(Vec<PathBuf>),
+    DriveSpaceLoaded {
+        drive: PathBuf,
+        result: Result<crate::drive_space::DiskSpace, String>,
+    },
     FolderLoaded {
         tab_id: u64,
         generation: u64,
@@ -490,6 +494,9 @@ pub struct Veldir {
     favorites: Vec<PathBuf>,
     shortcuts: Vec<(String, PathBuf)>,
     drives: Vec<PathBuf>,
+    drive_space: HashMap<PathBuf, Result<crate::drive_space::DiskSpace, String>>,
+    drive_space_pending: HashSet<PathBuf>,
+    drive_space_last_checked: Instant,
     clipboard: Option<InternalClipboard>,
     clipboard_keys: FileClipboardKeys,
     drag_intent: Option<DragIntent>,
@@ -645,6 +652,9 @@ impl Veldir {
             favorites: saved.favorites,
             shortcuts,
             drives,
+            drive_space: HashMap::new(),
+            drive_space_pending: HashSet::new(),
+            drive_space_last_checked: Instant::now() - Duration::from_secs(61),
             clipboard: None,
             clipboard_keys: FileClipboardKeys::default(),
             drag_intent: None,
@@ -1014,6 +1024,7 @@ impl Veldir {
     }
 
     fn refresh(&mut self) {
+        self.drive_space_last_checked = Instant::now() - Duration::from_secs(61);
         self.invalidate_folder_sizes();
         self.asset_generation = self.asset_generation.wrapping_add(1);
         self.thumb_cache.clear();
@@ -1031,7 +1042,17 @@ impl Veldir {
     fn pump(&mut self) {
         while let Ok(message) = self.rx.try_recv() {
             match message {
-                Message::DrivesLoaded(drives) => self.drives = drives,
+                Message::DrivesLoaded(drives) => {
+                    self.drives = drives;
+                    self.drive_space.retain(|drive, _| self.drives.contains(drive));
+                    self.drive_space_last_checked = Instant::now() - Duration::from_secs(61);
+                }
+                Message::DriveSpaceLoaded { drive, result } => {
+                    self.drive_space_pending.remove(&drive);
+                    if self.drives.contains(&drive) {
+                        self.drive_space.insert(drive, result);
+                    }
+                }
                 Message::WatchedPath(path) => {
                     self.asset_generation = self.asset_generation.wrapping_add(1);
                     if self.live_refresh {
@@ -2593,7 +2614,33 @@ impl Veldir {
             });
     }
 
+    /// Start independent read-only disk queries so a disconnected mapped
+    /// drive cannot block the UI or delay the results for other volumes.
+    /// Never spawn a duplicate query while one is still pending.
+    fn schedule_drive_space(&mut self) {
+        if self.drives.is_empty()
+            || self.drive_space_last_checked.elapsed() < Duration::from_secs(60)
+        {
+            return;
+        }
+        self.drive_space_last_checked = Instant::now();
+        for drive in self.drives.clone() {
+            if !self.drive_space_pending.insert(drive.clone()) {
+                continue;
+            }
+            let sender = self.tx.clone();
+            let ctx = self.context.clone();
+            std::thread::spawn(move || {
+                let result = crate::drive_space::query(&drive);
+                let _ = sender.send(Message::DriveSpaceLoaded { drive, result });
+                ctx.request_repaint();
+            });
+        }
+    }
+
     fn sidebar_ui(&mut self, ui: &mut egui::Ui) {
+        self.schedule_drive_space();
+        ui.ctx().request_repaint_after(Duration::from_secs(60));
         ui.set_width(198.0);
         ui.add_space(4.0);
         ui.label(
@@ -2655,14 +2702,33 @@ impl Veldir {
         );
         ui.add_space(4.0);
         for drive in &self.drives {
+            let (remaining, details) = match self.drive_space.get(drive) {
+                Some(Ok(space)) => (
+                    format!("{} liberi", pretty_bytes(space.available)),
+                    format!(
+                        "{} disponibili su {} totali (spazio accessibile all'utente). Aggiorna con F5.",
+                        pretty_bytes(space.available),
+                        pretty_bytes(space.capacity)
+                    ),
+                ),
+                Some(Err(error)) => (
+                    "n/d".to_owned(),
+                    format!("Spazio non disponibile: {error}. Riprovare con F5."),
+                ),
+                None => (
+                    "…".to_owned(),
+                    "Lettura dello spazio disponibile in background…".to_owned(),
+                ),
+            };
             if ui
                 .add_sized(
-                    [190.0, 27.0],
-                    egui::Button::new(format!("  {}", drive.display()))
+                    [190.0, 31.0],
+                    egui::Button::new(format!("{}  ·  {}", drive.display(), remaining))
                         .shortcut_text("")
                         .frame(false)
                         .selected(&self.current().path == drive),
                 )
+                .on_hover_text(details)
                 .clicked()
             {
                 target = Some(drive.clone());
@@ -3652,9 +3718,13 @@ impl Veldir {
             |ui| {
                 ui.add_space(4.0);
                 if self.sidebar_visible {
-                    ui.vertical(|ui| {
-                        self.sidebar_ui(ui);
-                    });
+                    egui::ScrollArea::vertical()
+                        .id_salt("sidebar-scroll")
+                        .max_height(content_height)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            self.sidebar_ui(ui);
+                        });
                     ui.separator();
                 }
                 if self.secondary.is_some() {

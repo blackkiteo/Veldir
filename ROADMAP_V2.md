@@ -221,6 +221,11 @@ La sidebar elenca unità locali e di rete mappate: implementata una prima lettur
 
 **Secondo incremento implementato nel ramo, da verificare:** spostamento cartelle cross-volume con manifest sorgente, confronto esatto di struttura/cartelle vuote/file, verifica byte e pubblicazione senza overwrite. Solo dopo l'esito positivo viene tentato il trasferimento della sorgente nel Cestino Windows; se il Cestino non è utilizzabile, l'operazione resta parziale e la copia pubblicata viene conservata. Cancellazione diretta ricorsiva deliberatamente evitata. Rifiuta symlink/junction e alberi oltre 100.000 elementi. Mancano prove Cestino reale, unità rimovibili e share SMB, oltre a ACL/metadati speciali, undo e atomicità piena. I gate M1 non sono chiusi; casi `MOVE-X01…X10`.
 
+## M1, terzo incremento: risultati strutturati per fase di pubblicazione (31/10/2026)
+Il motore ora distingue un errore **prima della pubblicazione** da una **copia verificata già pubblicata** con sorgente ancora da finalizzare. Il riepilogo espone cinque conteggi (`completati/parziali/saltati/falliti/non elaborati`), con dettaglio di sorgenti e destinazioni e un avviso UI nei casi parziali. Il preflight di Stop ora individua anche omonimi interni al batch; la progressione in byte è stata estesa agli spostamenti tra volumi.
+
+**Implementato nel ramo di sviluppo, CI e collaudo finale da confermare.** Restano aperti audit dei metadati, rilevazione delle modifiche concorrenti, unità SMB e verifica reale del Cestino. Il report è testuale e viene conservato nella cronologia delle operazioni: una finestra di dettaglio strutturata resta una possibile evoluzione.
+
 ## 7. Ordine consigliato delle prossime azioni
 
 1. **Subito:** confermare su Windows reale l'ultima build `0.10.0-dev`, compilata con 68 test, e registrare i risultati nell'issue #13.

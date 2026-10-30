@@ -96,6 +96,18 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 | PERF-01 | Apri cartella di 5.000 file | UI reattiva, misurare tempi |
 | PERF-02 | Registra RAM/CPU a riposo | Numeri misurati, niente stime |
 
+## Verifiche dimensione cartelle (nuova implementazione)
+
+| ID | Procedura | Risultato atteso |
+| --- | --- | --- |
+| SIZE-01 | Crea cartella vuota e cartella con file da 10 KiB + sottocartella con 20 KiB | 0 B e 30 KiB; mai soltanto la dimensione del contenitore |
+| SIZE-02 | Apri cartella con molte sottocartelle e scorri | Calcolo in background, interfaccia fluida e massimo 2 calcoli simultanei |
+| SIZE-03 | Ordina per Dimensione; attendi il completamento | Ordinamento delle cartelle aggiornato in base ai valori calcolati |
+| SIZE-04 | Modifica contenuto di una sottocartella e premi F5 | Risultati non rimangono obsoleti |
+| SIZE-05 | Visualizza → disattiva e riattiva Calcola dimensioni cartelle, poi riavvia | Preferenza persistente, «—» quando disattivato |
+| SIZE-06 | Prova directory con symlink/junction e percorso senza accesso | «n/d» e tooltip esplicativo, senza seguire collegamenti o inventare totali |
+| SIZE-07 | Prova condivisione remota lenta e cartella enorme | Veldir resta utilizzabile, dimensione non disponibile quando supera i limiti |
+
 ## Note
 Le copie batch possono fermarsi dopo alcuni elementi già completati, non esiste rollback automatico. Copie non garantiscono preservazione metadati e ACL. Testare ogni workflow e controllare l'EXE ottenuto dalla CI prima di usare il programma su file reali.
 

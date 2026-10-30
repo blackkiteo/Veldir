@@ -385,7 +385,10 @@ pub fn execute(
         let mut planned = std::collections::HashSet::new();
         for source in &sources {
             let name = source.file_name().ok_or("Nome sorgente non valido")?;
-            if !planned.insert(name.to_os_string()) {
+            // Windows usually compares filenames case-insensitively. A
+            // batch with "Report.txt" and "report.TXT" must be rejected
+            // before any item is published, not fail after the first copy.
+            if !planned.insert(name.to_string_lossy().to_lowercase()) {
                 return Err(format!(
                     "Conflitto nel batch: {}. Nessun elemento trasferito.",
                     name.to_string_lossy()
@@ -879,6 +882,35 @@ mod tests {
         .unwrap_err();
         assert!(result.contains("Conflitto nel batch"));
         assert!(!dest.join("identical.txt").exists());
+        assert_eq!(fs::read(first).unwrap(), b"FIRST");
+        assert_eq!(fs::read(second).unwrap(), b"SECOND");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stop_preflight_is_case_insensitive_for_windows_names() {
+        let root = tempfile::tempdir().unwrap();
+        let a = root.path().join("first");
+        let b = root.path().join("second");
+        let destination = root.path().join("destination");
+        fs::create_dir(&a).unwrap();
+        fs::create_dir(&b).unwrap();
+        fs::create_dir(&destination).unwrap();
+        let first = a.join("Report.txt");
+        let second = b.join("report.TXT");
+        fs::write(&first, b"FIRST").unwrap();
+        fs::write(&second, b"SECOND").unwrap();
+        let summary = execute(
+            vec![first.clone(), second.clone()],
+            destination.clone(),
+            false,
+            ConflictPolicy::Stop,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(summary.contains("Conflitto nel batch"));
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
         assert_eq!(fs::read(first).unwrap(), b"FIRST");
         assert_eq!(fs::read(second).unwrap(), b"SECOND");
     }

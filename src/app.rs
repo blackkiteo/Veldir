@@ -1044,7 +1044,8 @@ impl Veldir {
             match message {
                 Message::DrivesLoaded(drives) => {
                     self.drives = drives;
-                    self.drive_space.retain(|drive, _| self.drives.contains(drive));
+                    self.drive_space
+                        .retain(|drive, _| self.drives.contains(drive));
                     self.drive_space_last_checked = Instant::now() - Duration::from_secs(61);
                 }
                 Message::DriveSpaceLoaded { drive, result } => {

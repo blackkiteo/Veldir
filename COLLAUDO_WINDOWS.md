@@ -74,6 +74,9 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 | CLIP-16 | Ctrl+C su file in Esplora, apri Veldir senza selezionare file e clicca «Incolla» | Pulsante abilitato, finestra di conferma, sorgente intatta |
 | CLIP-17 | Con una copia di file in Windows premi e rilascia il solo tasto V, senza Ctrl | Nessun trasferimento viene avviato |
 | CLIP-18 | Ctrl+C in Veldir e poi copia testo in un'altra applicazione prima di Ctrl+V in Veldir | Non vengono incollati file obsoleti |
+| CLIP-19 | Seleziona più file con spazi, accenti e caratteri Unicode in Veldir; premi Ctrl+C e incolla in Esplora | Tutti i file corretti, nomi integri e sorgenti conservate |
+| CLIP-20 | Copia due file con nome Unicode da Esplora e incollali in Veldir | Entrambi i percorsi CF_HDROP letti correttamente, conferma prima della copia |
+| CLIP-21 | Mentre un'altra finestra è in primo piano, verifica che nessuna funzione automatica esporti appunti come appartenenti a un'altra applicazione | Nessuna sostituzione indesiderata della clipboard di sistema |
 
 | DND-04 | Trascina da pannello sinistro al destro (cartelle di test) | Richiesta conferma e sola copia, originali intatti |
 | DND-05 | Seleziona più file, trascina uno dei selezionati al pannello opposto | Copia di tutti i file selezionati con conferma |

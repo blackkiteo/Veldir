@@ -1,5 +1,6 @@
-//! Explicit, read-only import of file paths from Explorer's CF_HDROP clipboard.
-//! No moving, no clipboard mutations, and no assumption that Explorer's Cut means Move.
+//! Windows CF_HDROP file-path clipboard import and copy-only export.
+//! Import never moves files; export replaces the clipboard with paths to copy,
+//! never an Explorer MOVE intent.
 use std::path::PathBuf;
 
 /**
@@ -162,7 +163,7 @@ fn encode_dropfiles(paths: &[PathBuf]) -> Result<Vec<u8>, String> {
     if bytes > 4 * 1024 * 1024 {
         return Err("Percorsi selezionati troppo lunghi".into());
     }
-    // DROPFILES = POINT(8), pFiles(4), fNC(4), fWide(4).
+    // DROPFILES = pFiles(4), POINT(8), fNC(4), fWide(4).
     // Use little-endian bytes and NUL-initialization for the UTF-16 MULTI_SZ.
     let mut data = vec![0u8; bytes];
     data[..4].copy_from_slice(&20u32.to_le_bytes());
@@ -188,6 +189,7 @@ pub fn copy_files_to_explorer(paths: &[PathBuf]) -> Result<(), String> {
     #[link(name = "user32")]
     unsafe extern "system" {
         fn GetForegroundWindow() -> *mut c_void;
+        fn GetWindowThreadProcessId(hwnd: *mut c_void, process: *mut u32) -> u32;
         fn OpenClipboard(hwnd: *mut c_void) -> i32;
         fn CloseClipboard() -> i32;
         fn EmptyClipboard() -> i32;
@@ -195,6 +197,7 @@ pub fn copy_files_to_explorer(paths: &[PathBuf]) -> Result<(), String> {
     }
     #[link(name = "kernel32")]
     unsafe extern "system" {
+        fn GetCurrentProcessId() -> u32;
         fn GlobalAlloc(flags: u32, bytes: usize) -> *mut c_void;
         fn GlobalLock(handle: *mut c_void) -> *mut c_void;
         fn GlobalUnlock(handle: *mut c_void) -> i32;
@@ -239,6 +242,13 @@ pub fn copy_files_to_explorer(paths: &[PathBuf]) -> Result<(), String> {
     let owner = unsafe { GetForegroundWindow() };
     if owner.is_null() {
         return Err("Apri Veldir in primo piano per esportare i file".into());
+    }
+    let mut foreground_process = 0u32;
+    let thread = unsafe { GetWindowThreadProcessId(owner, &mut foreground_process) };
+    if thread == 0 || foreground_process != unsafe { GetCurrentProcessId() } {
+        // Never assign ownership of our clipboard payload to another process's
+        // foreground window, e.g. Explorer or a UAC prompt.
+        return Err("Porta Veldir in primo piano prima di copiare".into());
     }
     if unsafe { OpenClipboard(owner) } == 0 {
         return Err("Clipboard occupata: riprova".into());

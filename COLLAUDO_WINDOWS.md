@@ -96,6 +96,17 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 | PERF-01 | Apri cartella di 5.000 file | UI reattiva, misurare tempi |
 | PERF-02 | Registra RAM/CPU a riposo | Numeri misurati, niente stime |
 
+## Verifiche spazio disponibile delle unità (nuova implementazione)
+| ID | Procedura | Risultato atteso |
+| --- | --- | --- |
+| DRIVE-01 | Apri Veldir con C:\\ e un secondo disco locale | Ogni voce mostra `... GB liberi` senza bloccare la GUI |
+| DRIVE-02 | Confronta i valori con Proprietà disco di Esplora risorse | Quantità libera sostanzialmente coerente, tenendo conto di arrotondamenti e quote |
+| DRIVE-03 | Verifica unità di rete mappate X:\\, Y:\\, Z:\\ accessibili | Valore disponibile anche per il mapping di rete, senza attendere il completamento delle altre unità |
+| DRIVE-04 | Rendi temporaneamente irraggiungibile un'unità di rete di prova e riapri | La UI resta reattiva; `n/d` in caso di errore, non un valore numerico fittizio |
+| DRIVE-05 | Copia file di prova su un volume, poi premi F5 | Spazio disponibile aggiornato, senza richiedere riavvio |
+| DRIVE-06 | Apri molti preferiti e varie unità | Barra laterale scorrevole, le voci non vengono tagliate |
+| DRIVE-07 | Controlla il tooltip di un volume | Spazio libero disponibile all'utente e capacità totale coerenti |
+
 ## Verifiche dimensione cartelle (nuova implementazione)
 
 | ID | Procedura | Risultato atteso |

@@ -1,4 +1,4 @@
-# Piano di collaudo Veldir 0.9.0 — Windows 10/11
+# Piano di collaudo Veldir 0.10.0-dev — Windows 10/11
 
 **Eseguire solo su file di prova, mai su dati importanti.** Il passaggio della CI non sostituisce un collaudo manuale della GUI e delle operazioni.
 
@@ -63,6 +63,21 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 | CLIP-05 | Seleziona una cartella in Veldir, «Verso Esplora», Incolla in Esplora | Copia della cartella con conferma Windows standard |
 | CLIP-06 | Usa Ctrl+X in Veldir, poi incolla in Esplora | Nessun taglio della sorgente: il taglio rimane interno a Veldir |
 | CLIP-07 | Chiudi e riapri Veldir dopo Ctrl+C, poi incolla in Esplora | La clipboard Windows dei percorsi rimane valida fino alla sostituzione del contenuto |
+| CLIP-08 | Seleziona un file in Veldir, Ctrl+C, cambia pannello/cartella e Ctrl+V | Compare conferma trasferimento, file copiato e sorgente integra |
+| CLIP-09 | Copia due file da Esplora con Ctrl+C e premi Ctrl+V in Veldir | Veldir riconosce CF_HDROP senza testo, richiede conferma e copia entrambi |
+| CLIP-10 | Copia una cartella con Ctrl+C da Veldir e incolla con Ctrl+V nella stessa directory | Conflitto mostrato; Interrompi non sovrascrive, Conserva entrambi crea nome distinto |
+| CLIP-11 | Con filtro percorso attivo digita testo, Ctrl+A, Ctrl+C e Ctrl+V | Opera sul testo del filtro, non sulla selezione dei file |
+| CLIP-12 | Copia file in Veldir, poi copia testo semplice in un'altra applicazione e Ctrl+V nel pannello | Nessun file vecchio incollato per errore; avviso clipboard senza file |
+| CLIP-13 | Ctrl+X in Veldir, Ctrl+V in un'altra cartella Veldir | Conferma dello spostamento, nessuna eliminazione prima della conferma |
+| CLIP-14 | Ctrl+X su file A in Veldir, poi Ctrl+C su file B in Esplora e Ctrl+V in Veldir | Si COPIA B dopo conferma; A non si sposta e rimane intatto |
+| CLIP-15 | Ctrl+X su file A in Veldir, poi copia testo in Blocco note e Ctrl+V sul pannello | Nessun file viene spostato; compare avviso di assenza file negli appunti |
+| CLIP-16 | Ctrl+C su file in Esplora, apri Veldir senza selezionare file e clicca «Incolla» | Pulsante abilitato, finestra di conferma, sorgente intatta |
+| CLIP-17 | Con una copia di file in Windows premi e rilascia il solo tasto V, senza Ctrl | Nessun trasferimento viene avviato |
+| CLIP-18 | Ctrl+C in Veldir e poi copia testo in un'altra applicazione prima di Ctrl+V in Veldir | Non vengono incollati file obsoleti |
+| CLIP-19 | Seleziona più file con spazi, accenti e caratteri Unicode in Veldir; premi Ctrl+C e incolla in Esplora | Tutti i file corretti, nomi integri e sorgenti conservate |
+| CLIP-20 | Copia due file con nome Unicode da Esplora e incollali in Veldir | Entrambi i percorsi CF_HDROP letti correttamente, conferma prima della copia |
+| CLIP-21 | Mentre un'altra finestra è in primo piano, verifica che nessuna funzione automatica esporti appunti come appartenenti a un'altra applicazione | Nessuna sostituzione indesiderata della clipboard di sistema |
+
 | DND-04 | Trascina da pannello sinistro al destro (cartelle di test) | Richiesta conferma e sola copia, originali intatti |
 | DND-05 | Seleziona più file, trascina uno dei selezionati al pannello opposto | Copia di tutti i file selezionati con conferma |
 | DND-06 | Rilascia un file sul pannello di origine o fuori dai pannelli | Nessuna copia o spostamento |
@@ -80,6 +95,53 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 | FS-02 | Copia cartella con junction/symlink | Rifiuto senza pubblicazione parziale |
 | PERF-01 | Apri cartella di 5.000 file | UI reattiva, misurare tempi |
 | PERF-02 | Registra RAM/CPU a riposo | Numeri misurati, niente stime |
+
+## Resoconti di trasferimenti misti — terzo incremento 0.11
+| ID | Procedura con soli file di prova | Risultato atteso |
+| --- | --- | --- |
+| REPORT-01 | In un batch con Salta, mescola destinazione già esistente, file mancante e uno copiabile | Contatori `completati / parziali / saltati / falliti / non elaborati` coerenti; l'originale del file saltato rimane invariato |
+| REPORT-02 | Con politica Interrompi, copia due file da cartelle diverse con nome identico | Il preflight rifiuta l'intero batch: nessuna copia pubblicata |
+| REPORT-03 | Sposta cartella di prova tra volumi con Cestino temporaneamente non disponibile | Se la copia è stata verificata e pubblicata, UI segnala **trasferimento parziale** e cronologia indica entrambe le posizioni |
+| REPORT-04 | Avvia spostamento tra dischi di un file di prova grande, osserva l'avanzamento | Byte di avanzamento coerenti con la dimensione del contenuto; su stesso volume resta veloce senza bloccarsi |
+
+## Prima fase 0.11: spostamento file fra unità (solo con dati sintetici)
+**Usare due volumi diversi realmente scrivibili**, per esempio C: e una chiavetta USB. Non eseguire questi test su file personali: la funzione può eliminare la sorgente dopo la verifica.
+
+| ID | Procedura | Risultato atteso |
+| --- | --- | --- |
+| MOVE-X01 | Sposta un file di prova da 10 MiB da C: a USB/altro disco | Destinazione identica byte per byte; sorgente rimossa solo al termine |
+| MOVE-X02 | Sposta più file di prova con Stop, Salta e Conserva entrambi | Nessuna sovrascrittura, riepilogo chiaro, nessun elemento perso |
+| MOVE-X03 | Avvia spostamento file di 1–2 GiB su disco diverso e premi Annulla durante la copia | Sorgente integra, nessun file destinazione pubblicato |
+| MOVE-X04 | Simula cartella destinazione non scrivibile o file sorgente bloccato | Errore esplicito; sorgente conservata, nessuna destinazione parziale |
+| MOVE-X05 | Sposta una cartella di prova con file e sottocartelle da C: a un altro disco | Copia completa e byte-identica sulla destinazione; sorgente inviata al Cestino solo dopo verifica; ripristinabile se il volume supporta il Cestino |
+| MOVE-X07 | Sposta una cartella con sottocartella vuota, Unicode e più file | Tutti i nomi, byte e cartelle vuote conservati; nessuna sostituzione |
+| MOVE-X08 | Sposta cartella grande di prova e annulla mentre copia | Directory originale invariata, destinazione finale assente, staging rimosso |
+| MOVE-X09 | Usa una cartella di prova contenente un symlink o una junction | Rifiuto sicuro, nessuna destinazione pubblicata, sorgente invariata |
+| MOVE-X10 | Simula Cestino non disponibile con volume di prova | Dopo copia verificata, Veldir segnala esito parziale; entrambe le posizioni verificabili; mai eliminazione diretta ricorsiva |
+| MOVE-X06 | Controlla un file con nome Unicode; poi modifica la sorgente mentre la copia è in corso | Unicode integro; se la sorgente cambia, operazione prudenzialmente interrotta senza eliminarla |
+
+## Verifiche spazio disponibile delle unità (nuova implementazione)
+| ID | Procedura | Risultato atteso |
+| --- | --- | --- |
+| DRIVE-01 | Apri Veldir con C:\\ e un secondo disco locale | Ogni voce mostra `... GB liberi` senza bloccare la GUI |
+| DRIVE-02 | Confronta i valori con Proprietà disco di Esplora risorse | Quantità libera sostanzialmente coerente, tenendo conto di arrotondamenti e quote |
+| DRIVE-03 | Verifica unità di rete mappate X:\\, Y:\\, Z:\\ accessibili | Valore disponibile anche per il mapping di rete, senza attendere il completamento delle altre unità |
+| DRIVE-04 | Rendi temporaneamente irraggiungibile un'unità di rete di prova e riapri | La UI resta reattiva; `n/d` in caso di errore, non un valore numerico fittizio |
+| DRIVE-05 | Copia file di prova su un volume, poi premi F5 | Spazio disponibile aggiornato, senza richiedere riavvio |
+| DRIVE-06 | Apri molti preferiti e varie unità | Barra laterale scorrevole, le voci non vengono tagliate |
+| DRIVE-07 | Controlla il tooltip di un volume | Spazio libero disponibile all'utente e capacità totale coerenti |
+
+## Verifiche dimensione cartelle (nuova implementazione)
+
+| ID | Procedura | Risultato atteso |
+| --- | --- | --- |
+| SIZE-01 | Crea cartella vuota e cartella con file da 10 KiB + sottocartella con 20 KiB | 0 B e 30 KiB; mai soltanto la dimensione del contenitore |
+| SIZE-02 | Apri cartella con molte sottocartelle e scorri | Calcolo in background, interfaccia fluida e massimo 2 calcoli simultanei |
+| SIZE-03 | Ordina per Dimensione; attendi il completamento | Ordinamento delle cartelle aggiornato in base ai valori calcolati |
+| SIZE-04 | Modifica contenuto di una sottocartella e premi F5 | Risultati non rimangono obsoleti |
+| SIZE-05 | Visualizza → disattiva e riattiva Calcola dimensioni cartelle, poi riavvia | Preferenza persistente, «—» quando disattivato |
+| SIZE-06 | Prova directory con symlink/junction e percorso senza accesso | «n/d» e tooltip esplicativo, senza seguire collegamenti o inventare totali |
+| SIZE-07 | Prova condivisione remota lenta e cartella enorme | Veldir resta utilizzabile, dimensione non disponibile quando supera i limiti |
 
 ## Note
 Le copie batch possono fermarsi dopo alcuni elementi già completati, non esiste rollback automatico. Copie non garantiscono preservazione metadati e ACL. Testare ogni workflow e controllare l'EXE ottenuto dalla CI prima di usare il programma su file reali.

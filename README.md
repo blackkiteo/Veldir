@@ -1,12 +1,79 @@
-# Veldir v0.9.0 — file manager leggero per Windows
+# Veldir 0.10.0-dev — avanzamento della roadmap
 
-Prototipo **open source MIT** in Rust + egui, ispirato alla filosofia di File Pilot, con codice e identità indipendenti. **Non affiliato a File Pilot.**
+Build di sviluppo. La nuova pianificazione per milestone e **85 attività** è in [ROADMAP_V2.md](ROADMAP_V2.md); lo storico di implementazione resta in [ROADMAP.md](ROADMAP.md), mentre i gate obbligatori della 1.0 sono in [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md). Il collaudo GUI su hardware reale resta necessario.
 
-> **Stato reale:** la v0.9.0 ha superato check, test e build release Windows. La PR #11 con le correzioni grafiche è integrata in `main`; la [PR #12](https://github.com/blackkiteo/Veldir/pull/12) contiene la v0.10.0-dev e ha superato 53 test MSVC, ma resta **draft** fino al [collaudo Windows](https://github.com/blackkiteo/Veldir/issues/13). Nessuna di queste prove automatiche sostituisce il test reale della GUI e delle operazioni sui file. Non usare build di sviluppo come unica copia di file importanti.
+Veldir è un progetto **open source con licenza MIT**, indipendente e non affiliato a File Pilot. Lo stato 0.10.0-dev non è una release stabile: il collaudo reale e i criteri della [issue #13](https://github.com/blackkiteo/Veldir/issues/13) sono ancora aperti.
 
 ## Contribuire e sicurezza
 
-Il codice è pubblico con [licenza MIT](LICENSE). Proposte e bug report sono benvenuti tramite issue e Pull Request: prima di proporre modifiche consulta la [checklist delle PR](.github/pull_request_template.md). Per vulnerabilità o credenziali non aprire issue pubbliche: segui [SECURITY.md](SECURITY.md). Le verifiche automatiche dei segreti non sono una garanzia assoluta di sicurezza.
+Prima di contribuire, consultare la [checklist della Pull Request](.github/pull_request_template.md). Vulnerabilità e credenziali vanno segnalate privatamente secondo [SECURITY.md](SECURITY.md), **mai nelle issue pubbliche**. Per la protezione del ramo principale e le impostazioni a carico del proprietario, consultare [la checklist per il repository pubblico](docs/PUBLIC_REPOSITORY_CHECKLIST.md). Le scansioni automatiche non escludono ogni rischio.
+
+
+## 0.11 in sviluppo — riepiloghi trasferimenti (terzo incremento)
+- Ogni batch presenta una sintesi distinta: **completati, parziali, saltati, falliti, non elaborati**. Un trasferimento è *parziale* soltanto quando Veldir ha già pubblicato una copia verificata, ma non ha potuto finalizzare la rimozione della sorgente: entrambe le posizioni sono indicate nel report delle operazioni recenti.
+- Per la modalità **Interrompi** il controllo preventivo rifiuta anche più sorgenti con lo stesso nome nello stesso batch, prima di copiare o spostare file.
+- Gli spostamenti tra volumi mostrano progressi in byte oltre al conteggio elementi. Lo stato parziale è mostrato in UI come **avviso**; non come completamento.
+- L'operazione resta non transazionale: elementi già completati prima di un annullamento non vengono annullati automaticamente. Utilizza file sintetici per i test `REPORT-01…04`.
+
+## 0.11 in sviluppo — spostamento fra volumi, prima fase
+- Il comando **Sposta/Taglia** tenta prima lo spostamento atomico nella destinazione (stesso volume). Soltanto se Windows segnala `ERROR_NOT_SAME_DEVICE`, per un **file regolare** avvia una copia temporanea sul volume di destinazione.
+- Confronta **tutti i byte** della copia con l'originale, controlla che la sorgente non sia stata modificata e pubblica la copia senza sovrascrivere un nome esistente. **Solo dopo** tenta di eliminare l'originale.
+- Se la copia non riesce, la verifica fallisce oppure l'operazione viene annullata prima della pubblicazione, la sorgente non viene eliminata. Se l'errore compare **dopo** la pubblicazione (per esempio l'originale non è eliminabile), rimangono entrambe le copie e un messaggio segnala esplicitamente l'esito parziale: nessuna eliminazione automatica della copia riuscita.
+- **Cartelle fra volumi — secondo incremento sperimentale:** dopo la copia in staging, Veldir verifica **struttura completa, cartelle vuote, nomi, dimensioni e ogni byte dei file**, quindi pubblica la nuova cartella senza sostituirne altre. Solo dopo tenta di inviare la directory originale al **Cestino Windows**. In caso di errore, segnala esplicitamente entrambe le posizioni: non esegue mai una cancellazione ricorsiva parziale. Collegamenti/junction, oltre 100.000 elementi, ACL/metadati speciali e rollback completo restano non supportati. **Non usare la nuova funzione su cartelle importanti prima di una prova sul tuo PC.**
+- Prima della prova su dati importanti, verificare `MOVE-X01…X10` in `COLLAUDO_WINDOWS.md`. I test automatici cartelle simulano riciclo e uso di volumi distinti: non verificano il Cestino Windows reale o condivisioni di rete.
+- La versione dichiarata rimane **0.10.0-dev** finché la milestone 0.11 non è completa, collaudata e deliberata.
+
+## Spazio disponibile delle unità (nuova funzione di sviluppo)
+- Nella barra laterale **UNITÀ**, accanto a C:\\, D:\\ e agli eventuali dischi di rete mappati, appare la **quantità di spazio libero accessibile all'utente** (per esempio `C:\\ · 120.5 GB liberi`).
+- Valori ottenuti tramite API Windows `GetDiskFreeSpaceExW`, con letture in background indipendenti: un'unità di rete non raggiungibile non blocca la GUI né gli altri volumi.
+- Passando il mouse si vedono spazio disponibile e capacità complessiva. Unità non interrogabili mostrano `n/d`, senza valori inventati; `…` indica caricamento.
+- Aggiornamento periodico indicativamente ogni 60 secondi mentre la barra laterale è visibile e aggiornamento immediato con **F5** (salvo interrogazioni ancora in corso).
+- La barra laterale scorre verticalmente se sono presenti molti dischi o preferiti. Il comportamento grafico richiede collaudo su Windows.
+
+## Dimensione cartelle (nuova funzione di sviluppo)
+- La colonna **Dimensione** calcola ora anche il contenuto delle cartelle, sommando ricorsivamente i byte dei file regolari; una cartella vuota mostra 0 B.
+- Le misure vengono elaborate **in background**, solamente per le cartelle visibili, con massimo **2 scansioni contemporanee** e risultati in cache. Non bloccano l'apertura della cartella.
+- Durante il calcolo compare **…**; in caso di errore, collegamento/junction o limite di scansione compare **n/d**, con dettagli passando il mouse. Non vengono mostrati totali parziali come se fossero esatti.
+- I risultati si aggiornano dopo operazioni di file, F5 e modifiche intercettate dal watcher; l'ordinamento per dimensione si aggiorna quando arrivano i valori.
+- L'opzione **Visualizza → Calcola dimensioni cartelle** è attiva per impostazione predefinita ma disattivabile e persistente, utile su unità remote o dischi lenti.
+- Limite tecnico per singola cartella: 75.000 elementi o circa 3 secondi di traversal; una singola chiamata filesystem lenta non è interrompibile. Le dimensioni sono logiche (byte di contenuto), non lo spazio allocato sul disco.
+- La funzione è nuova e richiede ancora il collaudo GUI su Windows della build aggiornata.
+
+## Correzione copia/incolla da tastiera
+
+- Con un file selezionato, **Ctrl+C** lo copia negli appunti di Veldir e in quelli di Windows (formato CF_HDROP); **Ctrl+X** prepara uno spostamento solo interno.
+- **Ctrl+V** incolla nel pannello/cartella attiva anche file copiati da Esplora file: prima mostra la conferma con scelta tra Interrompi, Salta o Conserva entrambi in caso di collisione. La copia non sovrascrive file esistenti.
+- Il pulsante **Incolla** usa lo stesso comportamento di Ctrl+V; è disponibile anche quando i file provengono da Esplora file.
+- Se dopo Ctrl+X in Veldir copi altri file o del testo in un'altra applicazione, Veldir riconosce l'aggiornamento degli appunti e **non sposta più la vecchia selezione**. La Clipboard di Windows viene controllata per generazione, quando disponibile.
+- **Ctrl+Maiusc+V** resta disponibile per importare esplicitamente i file presenti negli appunti di Windows; la gestione dell'intenzione "Taglia" proveniente da Esplora resta prudenzialmente **solo copia**.
+- I campi di testo (filtro, percorso, ricerca, rinomina) conservano il copia/incolla di testo standard; eventuali scorciatoie sui file non vengono eseguite durante la modifica dei campi.
+- L'intercettazione di Ctrl+V copre anche gli appunti CF_HDROP senza contenuto testuale; questo comportamento va verificato sulla GUI Windows reale.
+
+## Funzioni di questa integrazione
+- Colonne opzionali e ridimensionabili, preferenze salvate; metadati adattivi nel doppio pannello.
+- Frecce, Home/Fine/Pagina, Maiusc per selezione, ricerca digitando, Backspace e focus della riga.
+- Schede scorrevoli, elenco, duplicazione, riordino, apertura nel pannello opposto e riapertura con Ctrl+Maiusc+T.
+- Ripristino sessione attivabile; percorsi mancanti conservati con errore e Riprova.
+- Trasferimenti con conferma, politiche Interrompi/Salta/Conserva entrambi, nessuna sostituzione automatica. Operazioni recenti con riepiloghi, errori e risultati parziali.
+- Anteprima completa della rinomina multipla con conflitti verificati.
+- Ricerca con ambito modificabile, filtro/ordine risultati, annullamento e selezione del risultato nella cartella.
+- Zoom immagini e anteprima UTF-16 con BOM; cache limitate e risultati delle miniature invalidati dopo modifiche.
+- AccessKit attivato e righe etichettate; validazione con screen reader ancora da eseguire.
+- About con versione/build e scorciatoie; ZIP con checksum, lockfile e build CI ripetibile.
+
+## Avvio
+Estrarre lo ZIP ed eseguire veldir.exe. Con --portable le preferenze sono salvate nella cartella VeldirData accanto al programma; quella cartella deve essere scrivibile. Con --path CARTELLA si sceglie il percorso iniziale. Visualizza → Informazioni mostra build e scorciatoie.
+
+PDF: estratto testuale e apertura con il programma associato. Rendering pagine, menu Shell completo e firma digitale richiedono lavoro o strumenti ulteriori; non sono dichiarati completati. Gli spostamenti restano sullo stesso volume.
+
+## Verifica
+cargo fmt --all -- --check
+cargo check --locked --all-targets
+cargo test --locked --all-targets
+cargo test --locked benchmark_large_listing -- --ignored --nocapture
+cargo build --locked --release
+
+## Cronologia funzionale
 
 ## Novità v0.9.0 — Filtri avanzati e cartelle aggiornate in tempo reale
 
@@ -52,7 +119,7 @@ Il codice è pubblico con [licenza MIT](LICENSE). Proposte e bug report sono ben
 
 - CF_HDROP è per file realmente presenti sul filesystem: file virtuali in app come Outlook non sono gestiti. Limite 500 elementi esportati.
 - Il trascinamento interno vale solo **tra due pannelli Veldir**, non verso Esplora file o altre finestre. Per trasferire verso Esplora utilizzare Ctrl+C e poi Incolla lì.
-- L'esportazione pubblica l'intenzione di **copia**, non di taglio. Incollare con Ctrl+V *dentro Veldir* usa la clipboard interna; per importare quella Windows usare Ctrl+Maiusc+V.
+- L'esportazione pubblica l'intenzione di **copia**, non di taglio. **Nella v0.10.0-dev corretta**, Ctrl+V preferisce l'elenco di file corrente della clipboard Windows e riconosce anche quelli copiati da Esplora; Ctrl+Maiusc+V resta un comando esplicito. Ctrl+X rimane solo interno a Veldir.
 - Nessun rollback automatico dei batch; link/junction e preservazione completa ACL/metadati non sono ancora supportati.
 
 ## Novità v0.5.0 — Trasferimenti più sicuri e clipboard Esplora
@@ -138,7 +205,7 @@ Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Wind
 | Modifica percorso / filtro pannello attivo | Ctrl+L / Ctrl+F |
 | Indietro / avanti / cartella superiore | Alt+← / Alt+→ / Alt+↑ |
 | Aggiorna entrambi i pannelli e le schede | F5 |
-| Copia anche in Esplora / taglia interno / incolla interno | Ctrl+C / Ctrl+X / Ctrl+V |
+| Copia file verso Veldir e Windows / taglia interno / incolla file Veldir o Esplora | Ctrl+C / Ctrl+X / Ctrl+V |
 | Importa da clipboard Esplora con conferma | Ctrl+Maiusc+V |
 | Deseleziona / Rinomina uno / Cestino multiplo | Esc / F2 / Canc |
 | Apri un elemento | Invio / doppio clic |
@@ -147,9 +214,14 @@ Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Wind
 
 - **Non è una release stabile:** mancano il collaudo completo della GUI e test su PC diversi.
 - Nessuna copia di link/junction, nessun rollback delle operazioni già completate e nessuna garanzia di preservare timestamp, ACL o altri metadati.
-- Trasferimenti in modalità Sposta tra dischi diversi non supportati; la copia senza sovrascrittura è invece utilizzabile, seguita da verifica manuale.
+- **Spostamenti tra dischi diversi: funzionalità sperimentale**, già presente per file e cartelle con copia verificata; per le cartelle l'originale è inviato al Cestino solo dopo la pubblicazione. Richiede test reali su disco USB/rete prima di usare dati importanti. Nessuna garanzia di preservazione completa di ACL, ADS e timestamp.
 - Clipboard Shell limitata a CF_HDROP con intenzione di copia; nessun drag & drop da Veldir verso applicazioni esterne.
 - Le icone native e le miniature immagini sono state introdotte nella 0.7; restano assenti rendering grafico PDF, indicizzazione persistente, menu contestuale completo di Windows, file watcher, installer e firma digitale.
 
 
 Consulta `SPECIFICHE.md` e `COLLAUDO_WINDOWS.md`.
+
+## Recupero impostazioni e integrazione Windows
+Le preferenze valide precedenti sono mantenute in una chiave di backup. Se le preferenze correnti non sono valide viene tentato il recupero e mostrato un avviso. Il menu contestuale delle cartelle offre apertura in una nuova scheda o nel pannello opposto. Il file corrente compare nell’avanzamento.
+
+Per la modalità portabile si può avviare Veldir-portable.cmd nello ZIP. Le decisioni su PDF, Shell e firma sono in ARCHITECTURE_DECISIONS.md. Lo script di firma richiede certificato e servizio timestamp del proprietario e non è stato eseguito.

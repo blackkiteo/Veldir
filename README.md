@@ -1,6 +1,6 @@
 # Veldir 0.10.0-dev — avanzamento della roadmap
 
-Build di sviluppo. I criteri per la 1.0 sono in RELEASE_CHECKLIST.md e lo stato delle fasi in ROADMAP.md. Il collaudo GUI su hardware reale resta necessario.
+Build di sviluppo. La nuova pianificazione per milestone e **85 attività** è in [ROADMAP_V2.md](ROADMAP_V2.md); lo storico di implementazione resta in [ROADMAP.md](ROADMAP.md), mentre i gate obbligatori della 1.0 sono in [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md). Il collaudo GUI su hardware reale resta necessario.
 
 Veldir è un progetto **open source con licenza MIT**, indipendente e non affiliato a File Pilot. Lo stato 0.10.0-dev non è una release stabile: il collaudo reale e i criteri della [issue #13](https://github.com/blackkiteo/Veldir/issues/13) sono ancora aperti.
 

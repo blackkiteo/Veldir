@@ -9,6 +9,12 @@ Veldir è un progetto **open source con licenza MIT**, indipendente e non affili
 Prima di contribuire, consultare la [checklist della Pull Request](.github/pull_request_template.md). Vulnerabilità e credenziali vanno segnalate privatamente secondo [SECURITY.md](SECURITY.md), **mai nelle issue pubbliche**. Per la protezione del ramo principale e le impostazioni a carico del proprietario, consultare [la checklist per il repository pubblico](docs/PUBLIC_REPOSITORY_CHECKLIST.md). Le scansioni automatiche non escludono ogni rischio.
 
 
+## 0.11 in sviluppo — riepiloghi trasferimenti (terzo incremento)
+- Ogni batch presenta una sintesi distinta: **completati, parziali, saltati, falliti, non elaborati**. Un trasferimento è *parziale* soltanto quando Veldir ha già pubblicato una copia verificata, ma non ha potuto finalizzare la rimozione della sorgente: entrambe le posizioni sono indicate nel report delle operazioni recenti.
+- Per la modalità **Interrompi** il controllo preventivo rifiuta anche più sorgenti con lo stesso nome nello stesso batch, prima di copiare o spostare file.
+- Gli spostamenti tra volumi mostrano progressi in byte oltre al conteggio elementi. Lo stato parziale è mostrato in UI come **avviso**; non come completamento.
+- L'operazione resta non transazionale: elementi già completati prima di un annullamento non vengono annullati automaticamente. Utilizza file sintetici per i test `REPORT-01…04`.
+
 ## 0.11 in sviluppo — spostamento fra volumi, prima fase
 - Il comando **Sposta/Taglia** tenta prima lo spostamento atomico nella destinazione (stesso volume). Soltanto se Windows segnala `ERROR_NOT_SAME_DEVICE`, per un **file regolare** avvia una copia temporanea sul volume di destinazione.
 - Confronta **tutti i byte** della copia con l'originale, controlla che la sorgente non sia stata modificata e pubblica la copia senza sovrascrivere un nome esistente. **Solo dopo** tenta di eliminare l'originale.
@@ -208,7 +214,7 @@ Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Wind
 
 - **Non è una release stabile:** mancano il collaudo completo della GUI e test su PC diversi.
 - Nessuna copia di link/junction, nessun rollback delle operazioni già completate e nessuna garanzia di preservare timestamp, ACL o altri metadati.
-- Trasferimenti in modalità Sposta tra dischi diversi non supportati; la copia senza sovrascrittura è invece utilizzabile, seguita da verifica manuale.
+- **Spostamenti tra dischi diversi: funzionalità sperimentale**, già presente per file e cartelle con copia verificata; per le cartelle l'originale è inviato al Cestino solo dopo la pubblicazione. Richiede test reali su disco USB/rete prima di usare dati importanti. Nessuna garanzia di preservazione completa di ACL, ADS e timestamp.
 - Clipboard Shell limitata a CF_HDROP con intenzione di copia; nessun drag & drop da Veldir verso applicazioni esterne.
 - Le icone native e le miniature immagini sono state introdotte nella 0.7; restano assenti rendering grafico PDF, indicizzazione persistente, menu contestuale completo di Windows, file watcher, installer e firma digitale.
 

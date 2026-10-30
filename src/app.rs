@@ -1062,7 +1062,9 @@ impl Veldir {
                             Ok(mut entries) => {
                                 for entry in &mut entries {
                                     if entry.is_dir {
-                                        if let Some(Ok(bytes)) = self.folder_size_cache.get(&entry.path) {
+                                        if let Some(Ok(bytes)) =
+                                            self.folder_size_cache.get(&entry.path)
+                                        {
                                             entry.size = *bytes;
                                         }
                                     }
@@ -1219,7 +1221,9 @@ impl Veldir {
                     }
                     if let Ok(bytes) = &result {
                         for tab in self.tabs.iter_mut().chain(self.secondary.iter_mut()) {
-                            if let Some(entry) = tab.entries.iter_mut().find(|e| e.is_dir && e.path == path) {
+                            if let Some(entry) =
+                                tab.entries.iter_mut().find(|e| e.is_dir && e.path == path)
+                            {
                                 entry.size = *bytes;
                                 if tab.sort_by == SortBy::Size {
                                     sort_entries(&mut tab.entries, tab.sort_by, tab.descending);
@@ -2908,9 +2912,19 @@ impl Veldir {
                 });
                 let hover = if item.is_dir && self.calculate_folder_sizes {
                     match self.folder_size_cache.get(&item.path) {
-                        Some(Err(error)) => format!("{}\nDimensione non disponibile: {error}", display_path(&item.path)),
-                        Some(Ok(bytes)) => format!("{}\nDimensione cartella: {} (contenuto ricorsivo)", display_path(&item.path), pretty_bytes(*bytes)),
-                        None => format!("{}\nCalcolo dimensione in background…", display_path(&item.path)),
+                        Some(Err(error)) => format!(
+                            "{}\nDimensione non disponibile: {error}",
+                            display_path(&item.path)
+                        ),
+                        Some(Ok(bytes)) => format!(
+                            "{}\nDimensione cartella: {} (contenuto ricorsivo)",
+                            display_path(&item.path),
+                            pretty_bytes(*bytes)
+                        ),
+                        None => format!(
+                            "{}\nCalcolo dimensione in background…",
+                            display_path(&item.path)
+                        ),
                     }
                 } else {
                     display_path(&item.path)

@@ -326,6 +326,41 @@ fn unique_target(parent: &Path, name: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn windows_not_same_device_error_is_recognized() {
+        // ERROR_NOT_SAME_DEVICE returned by MoveFileExW when flags == 0.
+        assert!(is_cross_device(&io::Error::from_raw_os_error(17)));
+        assert!(!is_cross_device(&io::Error::from(io::ErrorKind::PermissionDenied)));
+    }
+
+    #[test]
+    fn modified_source_during_copy_is_never_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("source.bin");
+        let dest = dir.path().join("destination");
+        fs::create_dir(&dest).unwrap();
+        fs::write(&from, vec![3u8; 1_000_000]).unwrap();
+        let to = dest.join("source.bin");
+        let changed = std::cell::Cell::new(false);
+        let result = move_one_with_rename(
+            &from,
+            &to,
+            &dest,
+            &AtomicBool::new(false),
+            &|progress| {
+                if progress.done_bytes > 0 && !changed.replace(true) {
+                    fs::write(&from, vec![9u8; 1_000_001]).unwrap();
+                }
+            },
+            simulate_cross_volume,
+        );
+        assert!(result.is_err());
+        assert_eq!(fs::metadata(&from).unwrap().len(), 1_000_001);
+        assert!(!to.exists(), "A copy must not be published after source mutation");
+        assert_eq!(fs::read_dir(dest).unwrap().count(), 0);
+    }
+
     fn simulate_cross_volume(
         _source: &Path,
         _target: &Path,

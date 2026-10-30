@@ -1,5 +1,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 mod app;
+mod drive_space;
 mod filters;
 mod folder_size;
 mod folder_watch;

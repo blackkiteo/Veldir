@@ -67,7 +67,11 @@ mod tests {
     #[test]
     fn quota_aware_free_space_cannot_exceed_accessible_capacity() {
         fn valid(available: u64, capacity: u64) -> bool {
-            DiskSpace { available, capacity }.valid()
+            DiskSpace {
+                available,
+                capacity,
+            }
+            .valid()
         }
         assert!(valid(0, 4096));
         assert!(valid(4096, 4096));

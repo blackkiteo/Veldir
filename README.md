@@ -9,6 +9,14 @@ Veldir è un progetto **open source con licenza MIT**, indipendente e non affili
 Prima di contribuire, consultare la [checklist della Pull Request](.github/pull_request_template.md). Vulnerabilità e credenziali vanno segnalate privatamente secondo [SECURITY.md](SECURITY.md), **mai nelle issue pubbliche**. Per la protezione del ramo principale e le impostazioni a carico del proprietario, consultare [la checklist per il repository pubblico](docs/PUBLIC_REPOSITORY_CHECKLIST.md). Le scansioni automatiche non escludono ogni rischio.
 
 
+## 0.11 in sviluppo — spostamento fra volumi, prima fase
+- Il comando **Sposta/Taglia** tenta prima lo spostamento atomico nella destinazione (stesso volume). Soltanto se Windows segnala `ERROR_NOT_SAME_DEVICE`, per un **file regolare** avvia una copia temporanea sul volume di destinazione.
+- Confronta **tutti i byte** della copia con l'originale, controlla che la sorgente non sia stata modificata e pubblica la copia senza sovrascrivere un nome esistente. **Solo dopo** tenta di eliminare l'originale.
+- Se la copia non riesce, la verifica fallisce oppure l'operazione viene annullata prima della pubblicazione, la sorgente non viene eliminata. Se l'errore compare **dopo** la pubblicazione (per esempio l'originale non è eliminabile), rimangono entrambe le copie e un messaggio segnala esplicitamente l'esito parziale: nessuna eliminazione automatica della copia riuscita.
+- **Spostamento di cartelle fra volumi non ancora supportato**: rimane un errore conservativo. Collegamenti/junction, sostituzioni silenziose, rollback completo e garanzie di atomicità fra filesystem restano fuori scope.
+- Prima della prova su dati importanti, verificare i test manuali `MOVE-X01…X06` in `COLLAUDO_WINDOWS.md`. Gli scenari cross-volume automatici vengono simulati con errore Windows di spostamento su disco diverso; non sostituiscono la prova su due volumi fisici.
+- La versione dichiarata rimane **0.10.0-dev** finché la milestone 0.11 non è completa, collaudata e deliberata.
+
 ## Spazio disponibile delle unità (nuova funzione di sviluppo)
 - Nella barra laterale **UNITÀ**, accanto a C:\\, D:\\ e agli eventuali dischi di rete mappati, appare la **quantità di spazio libero accessibile all'utente** (per esempio `C:\\ · 120.5 GB liberi`).
 - Valori ottenuti tramite API Windows `GetDiskFreeSpaceExW`, con letture in background indipendenti: un'unità di rete non raggiungibile non blocca la GUI né gli altri volumi.

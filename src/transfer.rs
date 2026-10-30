@@ -294,7 +294,9 @@ fn move_one_with_rename(
     match rename(source, target) {
         Ok(()) => return Ok(()),
         Err(error) if !is_cross_device(&error) => {
-            return Err(MoveFailure::before(format!("Spostamento non riuscito: {error}")));
+            return Err(MoveFailure::before(format!(
+                "Spostamento non riuscito: {error}"
+            )));
         }
         Err(_) => {}
     }

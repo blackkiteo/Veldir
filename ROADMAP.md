@@ -29,3 +29,9 @@ Recupero impostazioni da backup valido e avviso sui valori predefiniti, indicazi
 - Migliorata la priorità degli appunti: un Ctrl+X locale non prevale su nuovi appunti di Esplora o su testo copiato altrove; un Ctrl+C interno la cui esportazione Windows fallisce rimane disponibile finché non cambia la generazione degli appunti.
 - Il pulsante Incolla può importare anche un elenco di file CF_HDROP già presente in Windows, senza dover prima selezionare file in Veldir. I trasferimenti restano soggetti a conferma e a politiche senza sovrascrittura.
 - Aggiunti test di regressione per la validità del taglio locale e il rilascio del tasto V; collaudo interattivo Windows ancora da documentare. **Nessuna approvazione della release 1.0 implicita**.
+
+## Verifica formato clipboard Windows (30 ottobre 2026)
+- L'esportazione CF_HDROP ora serializza il blocco DROPFILES in una funzione separata, con intestazione, nomi UTF-16 e terminatore MULTI_SZ verificabili senza toccare la clipboard di sistema.
+- Aggiunto un test nativo su Windows che consegna il blocco a `DragQueryFileW` e verifica due percorsi, uno con spazi e caratteri Unicode. Aggiunti rifiuti testati per input vuoto, file inesistenti e più di 500 percorsi.
+- Prima di `EmptyClipboard`, Veldir controlla che la finestra in primo piano appartenga al proprio processo, per evitare di attribuire il contenuto a un'altra applicazione.
+- La verifica del payload non sostituisce il test manuale di Ctrl+C/Ctrl+V con Esplora: i formati clipboard proprietari o virtuali non sono supportati.

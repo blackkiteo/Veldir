@@ -898,15 +898,17 @@ mod tests {
             vec![skipped, missing, kept.clone()],
             dest.clone(),
             false,
-            ConflictPolicy::KeepBoth,
+            ConflictPolicy::Skip,
             &AtomicBool::new(false),
             |_| {},
         )
         .unwrap_err();
-        assert!(result.contains("Completati 2/3"), "{result}");
+        assert!(result.contains("Completati 1/3"), "{result}");
+        assert!(result.contains("saltati 1"), "{result}");
         assert!(result.contains("falliti 1"), "{result}");
         assert!(result.contains("non elaborati 0"), "{result}");
         assert_eq!(fs::read(dest.join("kept.txt")).unwrap(), b"copy");
+        assert_eq!(fs::read(dest.join("skipped.txt")).unwrap(), b"existing");
     }
 
     #[test]

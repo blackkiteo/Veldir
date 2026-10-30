@@ -646,6 +646,181 @@ mod tests {
     }
 
     #[test]
+    fn cross_volume_folder_moves_nested_unicode_and_empty_directories_after_verification() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("área 漢字");
+        let destination = dir.path().join("destination");
+        let archived = dir.path().join("recycle-simulated");
+        fs::create_dir_all(source.join("foto").join("empty")).unwrap();
+        fs::create_dir(&destination).unwrap();
+        let contents = vec![42u8; 600_000];
+        fs::write(source.join("foto").join("file résumé.bin"), &contents).unwrap();
+        fs::write(source.join("note.txt"), b"ok").unwrap();
+        let target = destination.join("área 漢字");
+        let called = std::cell::Cell::new(false);
+        move_folder_across_volumes(
+            &source,
+            &target,
+            &destination,
+            &AtomicBool::new(false),
+            &|_| {},
+            |p| {
+                assert!(target.join("foto").join("empty").is_dir());
+                assert_eq!(
+                    fs::read(target.join("foto").join("file résumé.bin")).unwrap(),
+                    contents
+                );
+                called.set(true);
+                fs::rename(p, &archived).map_err(|e| e.to_string())
+            },
+        )
+        .unwrap();
+        assert!(called.get());
+        assert!(!source.exists());
+        assert_eq!(fs::read(archived.join("note.txt")).unwrap(), b"ok");
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn cross_volume_folder_cancel_never_publishes_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("folder");
+        let destination = dir.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&destination).unwrap();
+        fs::write(source.join("data.bin"), vec![1u8; 2 * 1024 * 1024]).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let recycled = std::cell::Cell::new(false);
+        let result = move_folder_across_volumes(
+            &source,
+            &destination.join("folder"),
+            &destination,
+            &cancelled,
+            &|p| {
+                if p.done_bytes > 0 {
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+            },
+            |_| {
+                recycled.set(true);
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert!(!recycled.get());
+        assert_eq!(fs::metadata(source.join("data.bin")).unwrap().len(), 2 * 1024 * 1024);
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn cross_volume_folder_copy_corruption_detected_before_publication() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("folder");
+        let destination = dir.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&destination).unwrap();
+        fs::write(source.join("a.txt"), b"CORRECT").unwrap();
+        fs::write(destination.join("unrelated.txt"), b"keep").unwrap();
+        let expected = snapshot_tree(&source).unwrap();
+        let bad_copy = dir.path().join("bad-copy");
+        fs::create_dir(&bad_copy).unwrap();
+        fs::write(bad_copy.join("a.txt"), b"WRONG!!").unwrap();
+        let error = verify_folder_tree(&source, &bad_copy, &expected, &AtomicBool::new(false))
+            .unwrap_err();
+        assert!(error.contains("Verifica byte fallita"));
+        assert_eq!(fs::read(source.join("a.txt")).unwrap(), b"CORRECT");
+        assert_eq!(fs::read(destination.join("unrelated.txt")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn cross_volume_folder_changed_mid_copy_preserves_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("folder");
+        let destination = dir.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&destination).unwrap();
+        fs::write(source.join("data.bin"), vec![1u8; 1_000_000]).unwrap();
+        let changed = std::cell::Cell::new(false);
+        let recycle_called = std::cell::Cell::new(false);
+        let result = move_folder_across_volumes(
+            &source,
+            &destination.join("folder"),
+            &destination,
+            &AtomicBool::new(false),
+            &|p| {
+                if p.done_bytes > 0 && !changed.replace(true) {
+                    fs::write(source.join("new.txt"), b"New arrival").unwrap();
+                }
+            },
+            |_| {
+                recycle_called.set(true);
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert!(!recycle_called.get());
+        assert_eq!(fs::read(source.join("new.txt")).unwrap(), b"New arrival");
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn cross_volume_recycle_failure_reports_both_copies_without_rollback() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let destination = dir.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&destination).unwrap();
+        fs::write(source.join("file.txt"), b"SAFE").unwrap();
+        let target = destination.join("source");
+        let result = move_folder_across_volumes(
+            &source,
+            &target,
+            &destination,
+            &AtomicBool::new(false),
+            &|_| {},
+            |_| Err("Cestino indisponibile".into()),
+        )
+        .unwrap_err();
+        assert!(result.contains("Cestino indisponibile"));
+        assert!(result.contains("Verifica entrambe le posizioni"));
+        assert_eq!(fs::read(source.join("file.txt")).unwrap(), b"SAFE");
+        assert_eq!(fs::read(target.join("file.txt")).unwrap(), b"SAFE");
+    }
+
+    #[test]
+    fn cross_volume_folder_rejects_link_without_publishing_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("folder");
+        let destination = dir.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&destination).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            symlink(&source, source.join("cycle")).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            // A file symlink may be unavailable on Windows without developer
+            // mode. Missing symlink permissions leave this case for GUI QA.
+            if std::os::windows::fs::symlink_file(dir.path(), source.join("cycle")).is_err() {
+                return;
+            }
+        }
+        let result = move_folder_across_volumes(
+            &source,
+            &destination.join("folder"),
+            &destination,
+            &AtomicBool::new(false),
+            &|_| {},
+            |_| Ok(()),
+        );
+        assert!(result.is_err());
+        assert!(source.exists());
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
+    }
+
+    #[test]
     fn conflicts_skip_or_keep_both_without_overwrite() {
         let d = tempfile::tempdir().unwrap();
         let src = d.path().join("from");

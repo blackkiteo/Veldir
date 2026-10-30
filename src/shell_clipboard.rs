@@ -40,10 +40,64 @@ pub fn contains_files() -> bool {
     false
 }
 
+/// Decode all file paths or refuse the entire clipboard batch. Silently
+/// skipping missing, truncated or unreadable paths would make Ctrl+V copy only
+/// a subset of the files selected in Explorer without telling the user.
 #[cfg(windows)]
-pub fn files_from_explorer() -> Result<Vec<PathBuf>, String> {
+fn decode_hdrop(locked: *mut std::ffi::c_void) -> Result<Vec<PathBuf>, String> {
     use std::ffi::{OsString, c_void};
     use std::os::windows::ffi::OsStringExt;
+    use std::ptr::null_mut;
+
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn DragQueryFileW(hdrop: *mut c_void, index: u32, buf: *mut u16, chars: u32) -> u32;
+    }
+
+    if locked.is_null() {
+        return Err("Clipboard Windows non leggibile".into());
+    }
+    let count = unsafe { DragQueryFileW(locked, u32::MAX, null_mut(), 0) };
+    if count == 0 {
+        return Err("Nessun file da importare".into());
+    }
+    if count > 500 {
+        return Err("Seleziona al massimo 500 file per volta".into());
+    }
+    let mut paths = Vec::with_capacity(count as usize);
+    for index in 0..count {
+        let len = unsafe { DragQueryFileW(locked, index, null_mut(), 0) };
+        if len == 0 || len > 32767 {
+            return Err(format!(
+                "Percorso {} di {} non leggibile: nessun file importato",
+                index + 1,
+                count
+            ));
+        }
+        let mut buffer = vec![0u16; (len + 1) as usize];
+        let written = unsafe { DragQueryFileW(locked, index, buffer.as_mut_ptr(), len + 1) };
+        if written != len {
+            return Err(format!(
+                "Percorso {} di {} incompleto: nessun file importato",
+                index + 1,
+                count
+            ));
+        }
+        let path = PathBuf::from(OsString::from_wide(&buffer[..written as usize]));
+        if !path.exists() {
+            return Err(format!(
+                "Sorgente nella clipboard non disponibile: {}. Nessun file importato.",
+                path.display()
+            ));
+        }
+        paths.push(path);
+    }
+    Ok(paths)
+}
+
+#[cfg(windows)]
+pub fn files_from_explorer() -> Result<Vec<PathBuf>, String> {
+    use std::ffi::c_void;
     use std::ptr::null_mut;
 
     #[link(name = "user32")]
@@ -56,10 +110,6 @@ pub fn files_from_explorer() -> Result<Vec<PathBuf>, String> {
     unsafe extern "system" {
         fn GlobalLock(handle: *mut c_void) -> *mut c_void;
         fn GlobalUnlock(handle: *mut c_void) -> i32;
-    }
-    #[link(name = "shell32")]
-    unsafe extern "system" {
-        fn DragQueryFileW(hdrop: *mut c_void, index: u32, buf: *mut u16, chars: u32) -> u32;
     }
 
     struct ClipboardOpen;
@@ -93,33 +143,7 @@ pub fn files_from_explorer() -> Result<Vec<PathBuf>, String> {
         return Err("Impossibile leggere i percorsi nella clipboard".into());
     }
     let _lock = MemoryLock(handle);
-    let count = unsafe { DragQueryFileW(locked, u32::MAX, null_mut(), 0) };
-    if count == 0 {
-        return Err("Nessun file da importare".into());
-    }
-    if count > 500 {
-        return Err("Seleziona al massimo 500 file per volta".into());
-    }
-    let mut paths = Vec::with_capacity(count as usize);
-    for index in 0..count {
-        let len = unsafe { DragQueryFileW(locked, index, null_mut(), 0) };
-        if len == 0 || len > 32767 {
-            continue;
-        }
-        let mut buffer = vec![0u16; (len + 1) as usize];
-        let written = unsafe { DragQueryFileW(locked, index, buffer.as_mut_ptr(), len + 1) };
-        if written == 0 || written > len {
-            continue;
-        }
-        let path = PathBuf::from(OsString::from_wide(&buffer[..written as usize]));
-        if path.exists() {
-            paths.push(path);
-        }
-    }
-    if paths.is_empty() {
-        return Err("I file della clipboard non sono più accessibili".into());
-    }
-    Ok(paths)
+    decode_hdrop(locked)
 }
 
 #[cfg(not(windows))]

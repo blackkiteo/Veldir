@@ -8,6 +8,16 @@ Veldir è un progetto **open source con licenza MIT**, indipendente e non affili
 
 Prima di contribuire, consultare la [checklist della Pull Request](.github/pull_request_template.md). Vulnerabilità e credenziali vanno segnalate privatamente secondo [SECURITY.md](SECURITY.md), **mai nelle issue pubbliche**. Per la protezione del ramo principale e le impostazioni a carico del proprietario, consultare [la checklist per il repository pubblico](docs/PUBLIC_REPOSITORY_CHECKLIST.md). Le scansioni automatiche non escludono ogni rischio.
 
+
+## Dimensione cartelle (nuova funzione di sviluppo)
+- La colonna **Dimensione** calcola ora anche il contenuto delle cartelle, sommando ricorsivamente i byte dei file regolari; una cartella vuota mostra 0 B.
+- Le misure vengono elaborate **in background**, solamente per le cartelle visibili, con massimo **2 scansioni contemporanee** e risultati in cache. Non bloccano l'apertura della cartella.
+- Durante il calcolo compare **…**; in caso di errore, collegamento/junction o limite di scansione compare **n/d**, con dettagli passando il mouse. Non vengono mostrati totali parziali come se fossero esatti.
+- I risultati si aggiornano dopo operazioni di file, F5 e modifiche intercettate dal watcher; l'ordinamento per dimensione si aggiorna quando arrivano i valori.
+- L'opzione **Visualizza → Calcola dimensioni cartelle** è attiva per impostazione predefinita ma disattivabile e persistente, utile su unità remote o dischi lenti.
+- Limite tecnico per singola cartella: 75.000 elementi o circa 3 secondi di traversal; una singola chiamata filesystem lenta non è interrompibile. Le dimensioni sono logiche (byte di contenuto), non lo spazio allocato sul disco.
+- La funzione è nuova e richiede ancora il collaudo GUI su Windows della build aggiornata.
+
 ## Correzione copia/incolla da tastiera
 
 - Con un file selezionato, **Ctrl+C** lo copia negli appunti di Veldir e in quelli di Windows (formato CF_HDROP); **Ctrl+X** prepara uno spostamento solo interno.

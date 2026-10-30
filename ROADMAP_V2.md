@@ -208,6 +208,10 @@ Destinazione primaria: Windows 11 x64; compatibilità Windows 10 x64 da collauda
 | Release | ZIP portabile come canale principale; firma solo se disponibile certificato valido o esplicita pubblicazione unsigned |
 | Repository pubblico | Ruleset/branch protection prima di 1.0, scansioni automatiche e nessuna credenziale nel codice |
 
+## Funzione incrementale: dimensioni cartelle (richiesta utente 30/10/2026)
+
+Aggiunto nei sorgenti un calcolo ricorsivo della dimensione delle cartelle (solo righe visibili, 2 worker, cache, limiti 75.000 elementi / 3 secondi, disattivabile dal menu Visualizza). Il dato è riferito ai **byte logici**, non all'occupazione fisica; symlink, junction, directory non accessibili e cartelle fuori budget restituiscono «n/d» invece di un totale incompleto. Test backend aggiunti; **collaudo Windows della nuova interfaccia ancora aperto** (SIZE-01…07 in COLLAUDO_WINDOWS.md).
+
 ## 7. Ordine consigliato delle prossime azioni
 
 1. **Subito:** confermare su Windows reale l'ultima build `0.10.0-dev`, compilata con 68 test, e registrare i risultati nell'issue #13.

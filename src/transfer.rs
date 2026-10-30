@@ -595,25 +595,17 @@ mod tests {
     }
 
     #[test]
-    fn simulated_cross_volume_folder_move_is_rejected_without_changes() {
+    fn directory_snapshot_detects_new_files_without_trashing_original() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("folder");
-        let to = dir.path().join("to");
         fs::create_dir(&source).unwrap();
-        fs::create_dir(&to).unwrap();
+        fs::create_dir(source.join("empty")).unwrap();
         fs::write(source.join("important.txt"), b"KEEP").unwrap();
-        let target = to.join("folder");
-        let result = move_one_with_rename(
-            &source,
-            &target,
-            &to,
-            &AtomicBool::new(false),
-            &|_| {},
-            simulate_cross_volume,
-        );
-        assert!(result.unwrap_err().contains("solo per file regolari"));
+        let snapshot = snapshot_tree(&source).unwrap();
+        assert!(snapshot.contains_key(Path::new("empty")));
+        fs::write(source.join("new.txt"), b"NEW").unwrap();
+        assert_ne!(snapshot_tree(&source).unwrap(), snapshot);
         assert_eq!(fs::read(source.join("important.txt")).unwrap(), b"KEEP");
-        assert_eq!(fs::read_dir(to).unwrap().count(), 0);
     }
 
     #[test]

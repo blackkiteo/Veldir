@@ -326,6 +326,132 @@ fn unique_target(parent: &Path, name: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn simulate_cross_volume(
+        _source: &Path,
+        _target: &Path,
+    ) -> io::Result<()> {
+        Err(io::Error::from(io::ErrorKind::CrossesDevices))
+    }
+
+    #[test]
+    fn simulated_cross_volume_move_verifies_and_removes_only_original_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("from");
+        let to = dir.path().join("to");
+        fs::create_dir(&from).unwrap();
+        fs::create_dir(&to).unwrap();
+        let source = from.join("référence.txt");
+        let bytes = vec![0xa5u8; 800_000];
+        fs::write(&source, &bytes).unwrap();
+        let target = to.join("référence.txt");
+        let cancel = AtomicBool::new(false);
+        move_one_with_rename(
+            &source,
+            &target,
+            &to,
+            &cancel,
+            &|_| {},
+            simulate_cross_volume,
+        )
+        .unwrap();
+        assert!(!source.exists());
+        assert_eq!(fs::read(&target).unwrap(), bytes);
+        assert_eq!(fs::read_dir(&to).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn simulated_cross_volume_cancel_never_publishes_partial_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("big.bin");
+        let to = dir.path().join("to");
+        fs::create_dir(&to).unwrap();
+        fs::write(&source, vec![4u8; 2 * 1024 * 1024]).unwrap();
+        let target = to.join("big.bin");
+        let cancel = AtomicBool::new(false);
+        let result = move_one_with_rename(
+            &source,
+            &target,
+            &to,
+            &cancel,
+            &|p| {
+                if p.done_bytes > 0 {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            },
+            simulate_cross_volume,
+        );
+        assert!(result.is_err());
+        assert_eq!(fs::metadata(source).unwrap().len(), 2 * 1024 * 1024);
+        assert_eq!(fs::read_dir(to).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn simulated_cross_volume_folder_move_is_rejected_without_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("folder");
+        let to = dir.path().join("to");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&to).unwrap();
+        fs::write(source.join("important.txt"), b"KEEP").unwrap();
+        let target = to.join("folder");
+        let result = move_one_with_rename(
+            &source,
+            &target,
+            &to,
+            &AtomicBool::new(false),
+            &|_| {},
+            simulate_cross_volume,
+        );
+        assert!(result.unwrap_err().contains("solo per file regolari"));
+        assert_eq!(fs::read(source.join("important.txt")).unwrap(), b"KEEP");
+        assert_eq!(fs::read_dir(to).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn non_cross_volume_error_never_triggers_fallback_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("original.txt");
+        let target_dir = dir.path().join("destination");
+        fs::create_dir(&target_dir).unwrap();
+        fs::write(&source, b"ORIGINAL").unwrap();
+        let target = target_dir.join("original.txt");
+        let error = move_one_with_rename(
+            &source,
+            &target,
+            &target_dir,
+            &AtomicBool::new(false),
+            &|_| {},
+            |_, _| Err(io::Error::from(io::ErrorKind::PermissionDenied)),
+        )
+        .unwrap_err();
+        assert!(error.contains("Spostamento non riuscito"));
+        assert_eq!(fs::read(source).unwrap(), b"ORIGINAL");
+        assert_eq!(fs::read_dir(target_dir).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn verify_copy_detects_corruption_without_deleting_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.txt");
+        let target = dir.path().join("target.txt");
+        fs::write(&source, b"ORIGINAL").unwrap();
+        fs::write(&target, b"DIFFERNT").unwrap();
+        let meta = fs::metadata(&source).unwrap();
+        let result = verify_copy(&source, &target, &meta, &AtomicBool::new(false));
+        assert!(result.unwrap_err().contains("Verifica byte fallita"));
+        assert_eq!(fs::read(source).unwrap(), b"ORIGINAL");
+    }
+
+    #[test]
+    fn source_changed_after_publication_is_kept_for_reconciliation() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.txt");
+        fs::write(&source, b"before").unwrap();
+        let snapshot = fs::metadata(&source).unwrap();
+        fs::write(&source, b"changed content").unwrap();
+        assert!(!unchanged_source(&source, &snapshot));
+    }
+
     #[test]
     fn conflicts_skip_or_keep_both_without_overwrite() {
         let d = tempfile::tempdir().unwrap();

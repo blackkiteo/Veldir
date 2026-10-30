@@ -3719,11 +3719,24 @@ impl Veldir {
             |ui| {
                 ui.add_space(4.0);
                 if self.sidebar_visible {
+                    // Reserve the sidebar's fixed width in the parent first:
+                    // a scroll child must not expand the two file panes offscreen.
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(208.0, content_height),
+                        egui::Sense::hover(),
+                    );
+                    let mut sidebar = ui.new_child(
+                        egui::UiBuilder::new()
+                            .id_salt("sidebar-pane")
+                            .max_rect(rect)
+                            .layout(egui::Layout::top_down(egui::Align::Min)),
+                    );
+                    sidebar.set_clip_rect(rect.intersect(ui.clip_rect()));
                     egui::ScrollArea::vertical()
                         .id_salt("sidebar-scroll")
                         .max_height(content_height)
                         .auto_shrink([false, false])
-                        .show(ui, |ui| {
+                        .show(&mut sidebar, |ui| {
                             self.sidebar_ui(ui);
                         });
                     ui.separator();

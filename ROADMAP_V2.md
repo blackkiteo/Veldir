@@ -219,7 +219,7 @@ La sidebar elenca unità locali e di rete mappate: implementata una prima lettur
 ## M1, primo incremento (30/10/2026): move tra volumi per file regolari
 È stato implementato nel **ramo draft** il fallback per `ERROR_NOT_SAME_DEVICE`: copia in staging, controllo byte per byte, pubblicazione senza overwrite ed eliminazione della sorgente *solo dopo* la verifica e solo se risulta invariata. Annullamenti/errori prima del commit lasciano intatta la sorgente; gli errori successivi al commit vengono riportati come esiti parziali, senza nascondere l'eventuale doppia copia.
 
-**Parzialmente implementato / non collaudato su volumi distinti.** Le cartelle tra volumi restano escluse, così come ACL/metadati speciali, undo e piena atomicità inter-volume. I criteri M1 V2-011, V2-012, V2-014, V2-015 e V2-018 restano *aperti* fino a prova reale e copertura dei casi limite. Casi di collaudo `MOVE-X01…X06`.
+**Secondo incremento implementato nel ramo, da verificare:** spostamento cartelle cross-volume con manifest sorgente, confronto esatto di struttura/cartelle vuote/file, verifica byte e pubblicazione senza overwrite. Solo dopo l'esito positivo viene tentato il trasferimento della sorgente nel Cestino Windows; se il Cestino non è utilizzabile, l'operazione resta parziale e la copia pubblicata viene conservata. Cancellazione diretta ricorsiva deliberatamente evitata. Rifiuta symlink/junction e alberi oltre 100.000 elementi. Mancano prove Cestino reale, unità rimovibili e share SMB, oltre a ACL/metadati speciali, undo e atomicità piena. I gate M1 non sono chiusi; casi `MOVE-X01…X10`.
 
 ## 7. Ordine consigliato delle prossime azioni
 

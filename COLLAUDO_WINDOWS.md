@@ -1,4 +1,4 @@
-# Piano di collaudo Veldir 0.9.0 — Windows 10/11
+# Piano di collaudo Veldir 0.10.0-dev — Windows 10/11
 
 **Eseguire solo su file di prova, mai su dati importanti.** Il passaggio della CI non sostituisce un collaudo manuale della GUI e delle operazioni.
 
@@ -69,6 +69,12 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 | CLIP-11 | Con filtro percorso attivo digita testo, Ctrl+A, Ctrl+C e Ctrl+V | Opera sul testo del filtro, non sulla selezione dei file |
 | CLIP-12 | Copia file in Veldir, poi copia testo semplice in un'altra applicazione e Ctrl+V nel pannello | Nessun file vecchio incollato per errore; avviso clipboard senza file |
 | CLIP-13 | Ctrl+X in Veldir, Ctrl+V in un'altra cartella Veldir | Conferma dello spostamento, nessuna eliminazione prima della conferma |
+| CLIP-14 | Ctrl+X su file A in Veldir, poi Ctrl+C su file B in Esplora e Ctrl+V in Veldir | Si COPIA B dopo conferma; A non si sposta e rimane intatto |
+| CLIP-15 | Ctrl+X su file A in Veldir, poi copia testo in Blocco note e Ctrl+V sul pannello | Nessun file viene spostato; compare avviso di assenza file negli appunti |
+| CLIP-16 | Ctrl+C su file in Esplora, apri Veldir senza selezionare file e clicca «Incolla» | Pulsante abilitato, finestra di conferma, sorgente intatta |
+| CLIP-17 | Con una copia di file in Windows premi e rilascia il solo tasto V, senza Ctrl | Nessun trasferimento viene avviato |
+| CLIP-18 | Ctrl+C in Veldir e poi copia testo in un'altra applicazione prima di Ctrl+V in Veldir | Non vengono incollati file obsoleti |
+
 | DND-04 | Trascina da pannello sinistro al destro (cartelle di test) | Richiesta conferma e sola copia, originali intatti |
 | DND-05 | Seleziona più file, trascina uno dei selezionati al pannello opposto | Copia di tutti i file selezionati con conferma |
 | DND-06 | Rilascia un file sul pannello di origine o fuori dai pannelli | Nessuna copia o spostamento |

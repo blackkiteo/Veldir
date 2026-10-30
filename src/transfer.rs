@@ -108,12 +108,18 @@ fn snapshot_tree(root: &Path) -> Result<std::collections::BTreeMap<PathBuf, Tree
         let meta = fs::symlink_metadata(&path)
             .map_err(|e| format!("Impossibile leggere {}: {e}", path.display()))?;
         if meta.file_type().is_symlink() || reparse_point(&meta) {
-            return Err(format!("Collegamento o junction non supportato: {}", path.display()));
+            return Err(format!(
+                "Collegamento o junction non supportato: {}",
+                path.display()
+            ));
         }
         if !meta.is_dir() && !meta.is_file() {
             return Err(format!("Tipo non supportato: {}", path.display()));
         }
-        let relative = path.strip_prefix(root).map_err(|e| e.to_string())?.to_path_buf();
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|e| e.to_string())?
+            .to_path_buf();
         let modified = meta
             .modified()
             .map_err(|e| format!("Data modifica non disponibile per {}: {e}", path.display()))?;
@@ -142,7 +148,9 @@ fn verify_folder_tree(
 ) -> Result<(), String> {
     let current_source = snapshot_tree(source)?;
     if &current_source != expected {
-        return Err("La cartella sorgente è cambiata durante la copia; originale conservato".into());
+        return Err(
+            "La cartella sorgente è cambiata durante la copia; originale conservato".into(),
+        );
     }
     let current_replica = snapshot_tree(replica)?;
     if current_replica.len() != expected.len() {
@@ -153,10 +161,16 @@ fn verify_folder_tree(
             return Err("Verifica cartella annullata; originale conservato".into());
         }
         let Some(copied) = current_replica.get(relative) else {
-            return Err(format!("Elemento mancante nella copia: {}", relative.display()));
+            return Err(format!(
+                "Elemento mancante nella copia: {}",
+                relative.display()
+            ));
         };
         if original.is_directory != copied.is_directory || original.bytes != copied.bytes {
-            return Err(format!("Elemento diverso nella copia: {}", relative.display()));
+            return Err(format!(
+                "Elemento diverso nella copia: {}",
+                relative.display()
+            ));
         }
         if !original.is_directory {
             let path = source.join(relative);
@@ -201,7 +215,9 @@ fn move_folder_across_volumes(
         cancelled,
         notify,
     )?;
-    let name = source.file_name().ok_or("Nome cartella sorgente non valido")?;
+    let name = source
+        .file_name()
+        .ok_or("Nome cartella sorgente non valido")?;
     let staged_folder = staging.path().join(name);
     verify_folder_tree(source, &staged_folder, &snapshot, cancelled)?;
     if cancelled.load(Ordering::Relaxed) {
@@ -708,7 +724,10 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(!recycled.get());
-        assert_eq!(fs::metadata(source.join("data.bin")).unwrap().len(), 2 * 1024 * 1024);
+        assert_eq!(
+            fs::metadata(source.join("data.bin")).unwrap().len(),
+            2 * 1024 * 1024
+        );
         assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
     }
 
@@ -725,11 +744,14 @@ mod tests {
         let bad_copy = dir.path().join("bad-copy");
         fs::create_dir(&bad_copy).unwrap();
         fs::write(bad_copy.join("a.txt"), b"WRONG!!").unwrap();
-        let error = verify_folder_tree(&source, &bad_copy, &expected, &AtomicBool::new(false))
-            .unwrap_err();
+        let error =
+            verify_folder_tree(&source, &bad_copy, &expected, &AtomicBool::new(false)).unwrap_err();
         assert!(error.contains("Verifica byte fallita"));
         assert_eq!(fs::read(source.join("a.txt")).unwrap(), b"CORRECT");
-        assert_eq!(fs::read(destination.join("unrelated.txt")).unwrap(), b"keep");
+        assert_eq!(
+            fs::read(destination.join("unrelated.txt")).unwrap(),
+            b"keep"
+        );
     }
 
     #[test]

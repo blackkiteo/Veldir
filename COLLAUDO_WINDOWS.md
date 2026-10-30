@@ -96,6 +96,14 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 | PERF-01 | Apri cartella di 5.000 file | UI reattiva, misurare tempi |
 | PERF-02 | Registra RAM/CPU a riposo | Numeri misurati, niente stime |
 
+## Resoconti di trasferimenti misti — terzo incremento 0.11
+| ID | Procedura con soli file di prova | Risultato atteso |
+| --- | --- | --- |
+| REPORT-01 | In un batch con Salta, mescola destinazione già esistente, file mancante e uno copiabile | Contatori `completati / parziali / saltati / falliti / non elaborati` coerenti; l'originale del file saltato rimane invariato |
+| REPORT-02 | Con politica Interrompi, copia due file da cartelle diverse con nome identico | Il preflight rifiuta l'intero batch: nessuna copia pubblicata |
+| REPORT-03 | Sposta cartella di prova tra volumi con Cestino temporaneamente non disponibile | Se la copia è stata verificata e pubblicata, UI segnala **trasferimento parziale** e cronologia indica entrambe le posizioni |
+| REPORT-04 | Avvia spostamento tra dischi di un file di prova grande, osserva l'avanzamento | Byte di avanzamento coerenti con la dimensione del contenuto; su stesso volume resta veloce senza bloccarsi |
+
 ## Prima fase 0.11: spostamento file fra unità (solo con dati sintetici)
 **Usare due volumi diversi realmente scrivibili**, per esempio C: e una chiavetta USB. Non eseguire questi test su file personali: la funzione può eliminare la sorgente dopo la verifica.
 

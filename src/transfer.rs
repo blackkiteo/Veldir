@@ -77,9 +77,156 @@ fn unchanged_source(source: &Path, snapshot: &fs::Metadata) -> bool {
             .is_some_and(|(before, after)| before == after)
 }
 
+/// A manifest records names, file sizes and source timestamps before any
+/// copy starts. Linking/reparse paths are never traversed, including if they
+/// appear after the initial tree-size preflight.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TreeStamp {
+    is_directory: bool,
+    bytes: u64,
+    modified: std::time::SystemTime,
+}
+
+#[cfg(windows)]
+fn reparse_point(meta: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    meta.file_attributes() & 0x400 != 0
+}
+
+#[cfg(not(windows))]
+fn reparse_point(_meta: &fs::Metadata) -> bool {
+    false
+}
+
+fn snapshot_tree(root: &Path) -> Result<std::collections::BTreeMap<PathBuf, TreeStamp>, String> {
+    let mut result = std::collections::BTreeMap::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        if result.len() >= 100_000 {
+            return Err("Cartella troppo grande: massimo 100.000 elementi".into());
+        }
+        let meta = fs::symlink_metadata(&path)
+            .map_err(|e| format!("Impossibile leggere {}: {e}", path.display()))?;
+        if meta.file_type().is_symlink() || reparse_point(&meta) {
+            return Err(format!("Collegamento o junction non supportato: {}", path.display()));
+        }
+        if !meta.is_dir() && !meta.is_file() {
+            return Err(format!("Tipo non supportato: {}", path.display()));
+        }
+        let relative = path.strip_prefix(root).map_err(|e| e.to_string())?.to_path_buf();
+        let modified = meta
+            .modified()
+            .map_err(|e| format!("Data modifica non disponibile per {}: {e}", path.display()))?;
+        result.insert(
+            relative,
+            TreeStamp {
+                is_directory: meta.is_dir(),
+                bytes: if meta.is_file() { meta.len() } else { 0 },
+                modified,
+            },
+        );
+        if meta.is_dir() {
+            for entry in fs::read_dir(&path).map_err(|e| e.to_string())? {
+                pending.push(entry.map_err(|e| e.to_string())?.path());
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn verify_folder_tree(
+    source: &Path,
+    replica: &Path,
+    expected: &std::collections::BTreeMap<PathBuf, TreeStamp>,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    let current_source = snapshot_tree(source)?;
+    if &current_source != expected {
+        return Err("La cartella sorgente è cambiata durante la copia; originale conservato".into());
+    }
+    let current_replica = snapshot_tree(replica)?;
+    if current_replica.len() != expected.len() {
+        return Err("Copia cartella incompleta: numero di elementi diverso".into());
+    }
+    for (relative, original) in expected {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("Verifica cartella annullata; originale conservato".into());
+        }
+        let Some(copied) = current_replica.get(relative) else {
+            return Err(format!("Elemento mancante nella copia: {}", relative.display()));
+        };
+        if original.is_directory != copied.is_directory || original.bytes != copied.bytes {
+            return Err(format!("Elemento diverso nella copia: {}", relative.display()));
+        }
+        if !original.is_directory {
+            let path = source.join(relative);
+            let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+            verify_copy(&path, &replica.join(relative), &meta, cancelled)?;
+        }
+    }
+    if &snapshot_tree(source)? != expected {
+        return Err("Sorgente modificata durante la verifica; originale conservato".into());
+    }
+    Ok(())
+}
+
+/// After successful verification, publish the new folder, then move the old
+/// folder to the Windows Recycle Bin. This avoids partial recursive deletion.
+/// A recycle error is an explicit partial success: both locations are reported.
+/// The callback allows non-destructive tests without touching the OS bin.
+fn move_folder_across_volumes(
+    source: &Path,
+    target: &Path,
+    destination: &Path,
+    cancelled: &AtomicBool,
+    notify: &dyn Fn(Progress),
+    recycle: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let snapshot = snapshot_tree(source)?;
+    if !snapshot.get(Path::new("")).is_some_and(|s| s.is_directory) {
+        return Err("Sorgente non è una cartella".into());
+    }
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("Spostamento cartella annullato, sorgente conservata".into());
+    }
+    let staging = tempfile::Builder::new()
+        .prefix(".veldir-cross-volume-folder-")
+        .tempdir_in(destination)
+        .map_err(|e| format!("Area temporanea non disponibile: {e}"))?;
+    fs_ops::execute_progress(
+        Job::CopyMany {
+            sources: vec![source.to_path_buf()],
+            destination_folder: staging.path().to_path_buf(),
+        },
+        cancelled,
+        notify,
+    )?;
+    let name = source.file_name().ok_or("Nome cartella sorgente non valido")?;
+    let staged_folder = staging.path().join(name);
+    verify_folder_tree(source, &staged_folder, &snapshot, cancelled)?;
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("Annullato prima della pubblicazione; sorgente conservata".into());
+    }
+    fs_ops::rename_no_replace(&staged_folder, target)
+        .map_err(|e| format!("Impossibile pubblicare cartella; sorgente conservata: {e}"))?;
+    if cancelled.load(Ordering::Relaxed) || snapshot_tree(source).ok().as_ref() != Some(&snapshot) {
+        return Err(format!(
+            "Copia pubblicata in {}, ma sorgente {} conservata (annullamento o modifiche esterne)",
+            target.display(),
+            source.display()
+        ));
+    }
+    recycle(source).map_err(|e| {
+        format!(
+            "Cartella copiata e verificata in {}, ma impossibile spostare l'originale {} nel Cestino: {e}. Verifica entrambe le posizioni",
+            target.display(),
+            source.display()
+        )
+    })
+}
+
 /// One file, staged on the destination volume and verified byte-for-byte.
-/// Folder moves between volumes intentionally remain unsupported: recursive
-/// source deletion can be partially successful and needs a separate design.
+/// Folder moves between volumes use a separate manifest-and-Recycle-Bin path.
 fn move_one_with_rename(
     source: &Path,
     target: &Path,
@@ -97,11 +244,20 @@ fn move_one_with_rename(
     }
     let snapshot =
         fs::symlink_metadata(source).map_err(|e| format!("Sorgente non leggibile: {e}"))?;
-    if !snapshot.is_file() || fs_ops::tree_size(source).is_err() {
-        return Err(
-            "Spostamento tra dischi disponibile solo per file regolari; cartelle e collegamenti non vengono modificati"
-                .into(),
+    // Preflight links/junctions and unsupported entries before copying.
+    fs_ops::tree_size(source)?;
+    if snapshot.is_dir() {
+        return move_folder_across_volumes(
+            source,
+            target,
+            destination,
+            cancelled,
+            notify,
+            |folder| trash::delete(folder).map_err(|e| e.to_string()),
         );
+    }
+    if !snapshot.is_file() {
+        return Err("Tipo di sorgente non supportato".into());
     }
     if cancelled.load(Ordering::Relaxed) {
         return Err("Operazione annullata; sorgente non modificata".into());

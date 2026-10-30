@@ -12,6 +12,8 @@ Prima di contribuire, consultare la [checklist della Pull Request](.github/pull_
 
 - Con un file selezionato, **Ctrl+C** lo copia negli appunti di Veldir e in quelli di Windows (formato CF_HDROP); **Ctrl+X** prepara uno spostamento solo interno.
 - **Ctrl+V** incolla nel pannello/cartella attiva anche file copiati da Esplora file: prima mostra la conferma con scelta tra Interrompi, Salta o Conserva entrambi in caso di collisione. La copia non sovrascrive file esistenti.
+- Il pulsante **Incolla** usa lo stesso comportamento di Ctrl+V; è disponibile anche quando i file provengono da Esplora file.
+- Se dopo Ctrl+X in Veldir copi altri file o del testo in un'altra applicazione, Veldir riconosce l'aggiornamento degli appunti e **non sposta più la vecchia selezione**. La Clipboard di Windows viene controllata per generazione, quando disponibile.
 - **Ctrl+Maiusc+V** resta disponibile per importare esplicitamente i file presenti negli appunti di Windows; la gestione dell'intenzione "Taglia" proveniente da Esplora resta prudenzialmente **solo copia**.
 - I campi di testo (filtro, percorso, ricerca, rinomina) conservano il copia/incolla di testo standard; eventuali scorciatoie sui file non vengono eseguite durante la modifica dei campi.
 - L'intercettazione di Ctrl+V copre anche gli appunti CF_HDROP senza contenuto testuale; questo comportamento va verificato sulla GUI Windows reale.

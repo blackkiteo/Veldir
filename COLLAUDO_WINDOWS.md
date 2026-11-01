@@ -109,7 +109,7 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 
 | ID | Procedura | Risultato atteso |
 | --- | --- | --- |
-| MOVE-X01 | Sposta un file di prova da 10 MiB da C: a USB/altro disco | Destinazione identica byte per byte; sorgente rimossa solo al termine |
+| MOVE-X01 | Sposta un file di prova da 10 MiB da C: a USB/altro disco | Destinazione identica byte per byte; solo dopo la verifica l'originale viene inviato al Cestino, quando supportato dal volume |
 | MOVE-X02 | Sposta più file di prova con Stop, Salta e Conserva entrambi | Nessuna sovrascrittura, riepilogo chiaro, nessun elemento perso |
 | MOVE-X03 | Avvia spostamento file di 1–2 GiB su disco diverso e premi Annulla durante la copia | Sorgente integra, nessun file destinazione pubblicato |
 | MOVE-X04 | Simula cartella destinazione non scrivibile o file sorgente bloccato | Errore esplicito; sorgente conservata, nessuna destinazione parziale |
@@ -119,6 +119,9 @@ Crea due cartelle `C:\Veldir_Test\Origine` e `C:\Veldir_Test\Destinazione`, popo
 | MOVE-X09 | Usa una cartella di prova contenente un symlink o una junction | Rifiuto sicuro, nessuna destinazione pubblicata, sorgente invariata |
 | MOVE-X10 | Simula Cestino non disponibile con volume di prova | Dopo copia verificata, Veldir segnala esito parziale; entrambe le posizioni verificabili; mai eliminazione diretta ricorsiva |
 | MOVE-X06 | Controlla un file con nome Unicode; poi modifica la sorgente mentre la copia è in corso | Unicode integro; se la sorgente cambia, operazione prudenzialmente interrotta senza eliminarla |
+| MOVE-X11 | Sposta un singolo file di prova fra due volumi, poi apri il Cestino del volume di origine | Copia completa alla destinazione e originale recuperabile quando il Cestino è supportato |
+| MOVE-X12 | Simula un Cestino non utilizzabile per il volume di origine di un file di prova | Errore **parziale**, origine e copia conservate; nessuna eliminazione definitiva silenziosa |
+| MOVE-X13 | Sposta un file fra cartelle dello stesso volume | Rinomina/spostamento normale: non deve creare un elemento nel Cestino |
 
 ## Verifiche spazio disponibile delle unità (nuova implementazione)
 | ID | Procedura | Risultato atteso |

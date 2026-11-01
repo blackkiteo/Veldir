@@ -226,6 +226,11 @@ Il motore ora distingue un errore **prima della pubblicazione** da una **copia v
 
 **Implementato nel ramo di sviluppo, CI e collaudo finale da confermare.** Restano aperti audit dei metadati, rilevazione delle modifiche concorrenti, unità SMB e verifica reale del Cestino. Il report è testuale e viene conservato nella cronologia delle operazioni: una finestra di dettaglio strutturata resta una possibile evoluzione.
 
+## M1, quarto incremento (01/11/2026): file fra volumi recuperabili
+Per la cancellazione finale degli originali di **singoli file** spostati fra volumi è stato sostituito `fs::remove_file` con l'API del Cestino già impiegata per le cartelle. Questa operazione è eseguita **solo dopo** la copia staged, la verifica byte-per-byte e la pubblicazione senza overwrite; il fallimento del Cestino produce un `MoveFailure::after` (spostamento parziale) e conserva sia origine sia copia. I test automatici iniettano una funzione di riciclo *simulata*; non modificano il Cestino reale del runner. È ancora obbligatorio il collaudo Windows su disco esterno e unità SMB.
+
+**Limitazioni aperte:** i file modificati simultaneamente tra la verifica e il Cestino possono presentare una race; l'operazione non è inter-volume atomica. ACL, ADS, timestamps speciali e recuperabilità su ogni tipo di share/removable non sono garantiti. Gate M1 e #13 rimangono aperti.
+
 ## 7. Ordine consigliato delle prossime azioni
 
 1. **Subito:** confermare su Windows reale l'ultima build `0.10.0-dev`, compilata con 68 test, e registrare i risultati nell'issue #13.

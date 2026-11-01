@@ -25,6 +25,8 @@ Prima di contribuire, consultare la [checklist della Pull Request](.github/pull_
 
 ## 0.11 — gate di sicurezza dei trasferimenti (1 novembre 2026)
 
+Il preflight comune copre anche le API dirette `execute(Copy/CopyMany)`, senza azzerare il budget fra elementi. Per annullamento esterno e progresso usare `execute_progress`; l'API sincrona resta sincrona. [Consolidamento entrypoint](docs/COPY_ENTRYPOINTS_0_11.md).
+
 Le copie usano un preflight cancellabile fra operazioni, limitato a 100.000 elementi per batch e 32 MiB di percorsi pendenti. Errori di lettura, annullamento o superamento del budget fermano il batch prima dello staging. I totali sono stime; gli spostamenti sullo stesso volume avanzano per elementi senza scansione ricorsiva dei byte. Una chiamata SMB già bloccata rimane soggetta ai tempi del sistema. [Dettagli](docs/PREFLIGHT_0_11.md).
 
 **Lo spostamento automatico fra volumi è disabilitato.** Su `ERROR_NOT_SAME_DEVICE` il comando si ferma prima di copiare o inviare l'origine al Cestino, conservando gli originali. È possibile usare Copia e verificare manualmente il contenuto mantenendo l'origine. Gli spostamenti sullo stesso volume restano disponibili senza sovrascrittura.

@@ -181,14 +181,6 @@ fn is_windows_reparse_point(_meta: &fs::Metadata) -> bool {
     false
 }
 
-/// Copy to an isolated staging directory, NEVER directly to the destination.
-/// On failure tempfile removes only staging files created by Veldir.
-/// Junctions and symlinks are rejected to avoid unsafe recursive traversal.
-fn copy_no_links(source: &Path, target: &Path) -> Result<(), String> {
-    let cancelled = AtomicBool::new(false);
-    copy_tree_progress(source, target, &cancelled, &mut |_| {})
-}
-
 /// One budget is shared by every source in a copy batch. Entries are charged
 /// before enqueue (including roots); the pending path queue has its own bound.
 struct ScanBudget {
@@ -411,17 +403,6 @@ pub(crate) fn tree_size(source: &Path) -> Result<u64, String> {
 
 /// Each write is to a private staging path; a cancellation cleans that staging
 /// directory instead of publishing a partial destination.
-fn copy_tree_progress(
-    source: &Path,
-    target: &Path,
-    cancelled: &AtomicBool,
-    on_chunk: &mut impl FnMut(u64),
-) -> Result<(), String> {
-    copy_tree_progress_with_sync(source, target, cancelled, on_chunk, &mut |file| {
-        file.sync_all()
-    })
-}
-
 fn copy_tree_progress_with_sync(
     source: &Path,
     target: &Path,
@@ -887,18 +868,18 @@ pub fn execute(job: Job) -> Result<String, String> {
             source,
             destination_folder,
         } => {
-            let target = target_path(&source, &destination_folder)?;
-            let name = source.file_name().ok_or("Nome sorgente non valido")?;
-            let staging = tempfile::Builder::new()
-                .prefix(".veldir-staging-")
-                .tempdir_in(&destination_folder)
-                .map_err(|e| format!("Impossibile creare una cartella temporanea: {e}"))?;
-            let staged_target = staging.path().join(name);
-            copy_no_links(&source, &staged_target)?;
-            // Commit within the same filesystem. Any conflict leaves the original intact.
-            rename_no_replace(&staged_target, &target)
-                .map_err(|e| format!("Destinazione non disponibile o già presente: {e}"))?;
-            Ok(format!("Copiato in {}", destination_folder.display()))
+            let success = format!("Copiato in {}", destination_folder.display());
+            // The synchronous API shares the full preflight but does not expose
+            // an external cancellation token or progress callback.
+            execute_progress(
+                Job::Copy {
+                    source,
+                    destination_folder,
+                },
+                &AtomicBool::new(false),
+                |_| {},
+            )
+            .map(|_| success)
         }
         Job::Move {
             source,
@@ -920,11 +901,18 @@ pub fn execute(job: Job) -> Result<String, String> {
             sources,
             destination_folder,
         } => {
-            preflight_batch(&sources, &destination_folder, &AtomicBool::new(false))?;
-            run_batch(sources, |source| Job::Copy {
-                source,
-                destination_folder: destination_folder.clone(),
-            })
+            let total = sources.len();
+            // Delegate the entire batch so roots share one scan budget and no
+            // source is published before every source has passed preflight.
+            execute_progress(
+                Job::CopyMany {
+                    sources,
+                    destination_folder,
+                },
+                &AtomicBool::new(false),
+                |_| {},
+            )
+            .map(|_| format!("Operazione completata su {total} elementi"))
         }
         Job::MoveMany {
             sources,
@@ -952,6 +940,249 @@ pub fn execute(job: Job) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execute_copy_obeys_entry_and_pending_budgets_before_writes() {
+        for (max_entries, max_pending_bytes, expected) in [
+            (2, 1024 * 1024, "massimo 2 elementi"),
+            (100, 1, "limite memoria"),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("source");
+            let destination = root.path().join("destination");
+            fs::create_dir(&source).unwrap();
+            fs::create_dir(&destination).unwrap();
+            fs::write(source.join("a.txt"), b"A").unwrap();
+            fs::write(source.join("b.txt"), b"BB").unwrap();
+            fs::write(destination.join("existing.txt"), b"KEEP").unwrap();
+            let error = with_scan_test_settings(
+                max_entries,
+                max_pending_bytes,
+                |_, _| Ok(()),
+                || {
+                    execute(Job::Copy {
+                        source: source.clone(),
+                        destination_folder: destination.clone(),
+                    })
+                },
+            )
+            .unwrap_err();
+            assert!(error.contains(expected), "{error}");
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+            assert_eq!(fs::read(destination.join("existing.txt")).unwrap(), b"KEEP");
+            assert_eq!(fs::read(source.join("a.txt")).unwrap(), b"A");
+            assert_eq!(fs::read(source.join("b.txt")).unwrap(), b"BB");
+        }
+    }
+
+    #[test]
+    fn execute_copy_many_missing_or_unreadable_second_source_prevents_first_publication() {
+        for missing in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let destination = root.path().join("destination");
+            let first = root.path().join("first.txt");
+            let second = root.path().join("second");
+            fs::create_dir(&destination).unwrap();
+            fs::write(destination.join("existing.txt"), b"KEEP").unwrap();
+            fs::write(&first, b"FIRST").unwrap();
+            if !missing {
+                fs::create_dir(&second).unwrap();
+                fs::write(second.join("child.txt"), b"CHILD").unwrap();
+            }
+            let fault_path = second.clone();
+            let injected = std::rc::Rc::new(std::cell::Cell::new(false));
+            let hit = injected.clone();
+            let error = with_scan_test_settings(
+                100,
+                1024 * 1024,
+                move |operation, path| {
+                    if !missing && operation == ScanOperation::Next && path == fault_path {
+                        hit.set(true);
+                        return Err("simulated directory enumeration failure".into());
+                    }
+                    Ok(())
+                },
+                || {
+                    execute(Job::CopyMany {
+                        sources: vec![first.clone(), second.clone()],
+                        destination_folder: destination.clone(),
+                    })
+                },
+            )
+            .unwrap_err();
+            if missing {
+                assert!(error.contains("second"), "{error}");
+                assert!(!injected.get());
+            } else {
+                assert!(
+                    error.contains("simulated directory enumeration failure"),
+                    "{error}"
+                );
+                assert!(injected.get());
+                assert_eq!(fs::read(second.join("child.txt")).unwrap(), b"CHILD");
+            }
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+            assert_eq!(fs::read(destination.join("existing.txt")).unwrap(), b"KEEP");
+            assert_eq!(fs::read(first).unwrap(), b"FIRST");
+        }
+    }
+
+    #[test]
+    fn execute_copy_many_shares_budget_across_roots_and_scans_each_entry_once() {
+        for max_entries in [3, 4] {
+            let root = tempfile::tempdir().unwrap();
+            let first = root.path().join("first");
+            let second = root.path().join("second");
+            let destination = root.path().join("destination");
+            fs::create_dir(&first).unwrap();
+            fs::create_dir(&second).unwrap();
+            fs::create_dir(&destination).unwrap();
+            fs::write(first.join("a.txt"), b"A").unwrap();
+            fs::write(second.join("b.txt"), b"BB").unwrap();
+            let visits = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let recorded = visits.clone();
+            let result = with_scan_test_settings(
+                max_entries,
+                1024 * 1024,
+                move |operation, path| {
+                    if operation == ScanOperation::Metadata {
+                        recorded.borrow_mut().push(path.to_path_buf());
+                    }
+                    Ok(())
+                },
+                || {
+                    execute(Job::CopyMany {
+                        sources: vec![first.clone(), second.clone()],
+                        destination_folder: destination.clone(),
+                    })
+                },
+            );
+            if max_entries == 3 {
+                assert!(result.unwrap_err().contains("massimo 3 elementi"));
+                assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+            } else {
+                assert_eq!(result.unwrap(), "Operazione completata su 2 elementi");
+                assert_eq!(
+                    *visits.borrow(),
+                    vec![
+                        first.clone(),
+                        first.join("a.txt"),
+                        second.clone(),
+                        second.join("b.txt")
+                    ]
+                );
+                assert_eq!(
+                    fs::read(destination.join("first").join("a.txt")).unwrap(),
+                    b"A"
+                );
+                assert_eq!(
+                    fs::read(destination.join("second").join("b.txt")).unwrap(),
+                    b"BB"
+                );
+                assert_eq!(fs::read_dir(&destination).unwrap().count(), 2);
+            }
+            assert_eq!(fs::read(first.join("a.txt")).unwrap(), b"A");
+            assert_eq!(fs::read(second.join("b.txt")).unwrap(), b"BB");
+        }
+    }
+
+    #[test]
+    fn execute_copy_scans_once_and_preserves_success_message() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.txt");
+        let destination = root.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        fs::write(&source, b"CONTENTS").unwrap();
+        let visits = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let recorded = visits.clone();
+        let result = with_scan_test_settings(
+            1,
+            1024 * 1024,
+            move |operation, path| {
+                if operation == ScanOperation::Metadata {
+                    recorded.borrow_mut().push(path.to_path_buf());
+                }
+                Ok(())
+            },
+            || {
+                execute(Job::Copy {
+                    source: source.clone(),
+                    destination_folder: destination.clone(),
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(result, format!("Copiato in {}", destination.display()));
+        assert_eq!(*visits.borrow(), vec![source.clone()]);
+        assert_eq!(fs::read(source).unwrap(), b"CONTENTS");
+        assert_eq!(
+            fs::read(destination.join("source.txt")).unwrap(),
+            b"CONTENTS"
+        );
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn execute_copy_entrypoints_preserve_preexisting_and_new_conflicts() {
+        for batch in [false, true] {
+            for preexisting in [true, false] {
+                let root = tempfile::tempdir().unwrap();
+                let first = root.path().join("first.txt");
+                let second = root.path().join("second.txt");
+                let destination = root.path().join("destination");
+                fs::create_dir(&destination).unwrap();
+                fs::write(&first, b"FIRST").unwrap();
+                fs::write(&second, b"SECOND").unwrap();
+                let conflict = destination.join("second.txt");
+                if preexisting {
+                    fs::write(&conflict, b"KEEP CONFLICT").unwrap();
+                }
+                let collision_source = second.clone();
+                let collision_target = conflict.clone();
+                let result = with_scan_test_settings(
+                    100,
+                    1024 * 1024,
+                    move |operation, path| {
+                        if !preexisting
+                            && operation == ScanOperation::Metadata
+                            && path == collision_source
+                        {
+                            fs::write(&collision_target, b"KEEP CONFLICT").unwrap();
+                        }
+                        Ok(())
+                    },
+                    || {
+                        if batch {
+                            execute(Job::CopyMany {
+                                sources: vec![first.clone(), second.clone()],
+                                destination_folder: destination.clone(),
+                            })
+                        } else {
+                            execute(Job::Copy {
+                                source: second.clone(),
+                                destination_folder: destination.clone(),
+                            })
+                        }
+                    },
+                );
+                assert!(result.is_err());
+                assert_eq!(fs::read(&first).unwrap(), b"FIRST");
+                assert_eq!(fs::read(&second).unwrap(), b"SECOND");
+                assert_eq!(fs::read(&conflict).unwrap(), b"KEEP CONFLICT");
+                // A conflict introduced after preflight can follow a published
+                // first item; existing conflicts prevent the entire batch.
+                let first_published = batch && !preexisting;
+                assert_eq!(destination.join("first.txt").exists(), first_published);
+                assert_eq!(
+                    fs::read_dir(&destination).unwrap().count(),
+                    if first_published { 2 } else { 1 }
+                );
+                if first_published {
+                    assert_eq!(fs::read(destination.join("first.txt")).unwrap(), b"FIRST");
+                }
+            }
+        }
+    }
 
     #[test]
     fn scan_budget_counts_roots_globally_and_accepts_exact_limit() {

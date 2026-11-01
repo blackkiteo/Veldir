@@ -61,6 +61,8 @@ Destinazione primaria: Windows 11 x64; compatibilità Windows 10 x64 da collauda
 
 ### M1 — 0.11: motore trasferimenti affidabile (P0)
 
+**Incremento preflight:** pianificazione delle copie cancellabile fra operazioni filesystem, budget condiviso batch (100.000 elementi e 32 MiB di percorsi pendenti), errori espliciti prima dello staging e riuso dei totali. Rename same-volume per elementi senza scansione ricorsiva dei byte. Vedere [contratto e verifiche](docs/PREFLIGHT_0_11.md); non chiude il collaudo USB/SMB né M1.
+
 **Gate 1 novembre 2026:** dopo review indipendenti QA/Security, lo spostamento automatico fra volumi è disabilitato prima di staging e Cestino. Originali conservati; incrementi storici sotto limitati a prototipi nei test. Restano race e ADS/metadati da risolvere prima della riabilitazione. Correzioni sync, report e conflitti nell'[audit 0.11](docs/TRANSFER_AUDIT_0_11.md). V2-011/V2-018 e uscita M1 restano aperti.
 
 **Obiettivo:** operazioni prevedibili anche su volumi diversi, errori e batch complessi.

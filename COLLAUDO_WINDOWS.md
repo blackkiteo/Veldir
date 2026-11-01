@@ -1,5 +1,13 @@
 # Piano di collaudo Veldir 0.10.0-dev — Windows 10/11
 
+## Preflight copie — scenari ancora da collaudare
+
+- PREF-01: annullare durante preparazione di un albero sintetico su USB/SMB; al punto cooperativo successivo compare annullamento, senza staging/pubblicazioni. Non confondere timeout di una chiamata bloccata con mancato controllo del token.
+- PREF-02: batch sintetico oltre 100.000 elementi complessivi; rifiuto esplicito prima delle scritture. Non occorre riprodurlo manualmente se già coperto con budget ridotto in CI, ma non dichiarare collaudo hardware.
+- PREF-03: una sorgente scompare o diventa illeggibile durante il preflight; nessuna copia del batch pubblicata e messaggio esplicito.
+- PREF-04: copia Unicode/annidata con Salta; conflitti intatti, avanzamento coerente. Move stesso volume mostra avanzamento per elementi; move fra volumi resta rifiutato.
+
+
 **Gate 1 novembre 2026:** cross-volume disabilitato. Per questa build i casi MOVE-X fra volumi devono verificare rifiuto esplicito, origine invariata, destinazione assente e nessun Cestino. Gli esiti sperimentali descritti sotto sono sospesi fino alla riabilitazione, non costituiscono comportamento atteso attuale. MOVE-X13 stesso volume resta valido. Copie USB/SMB, errori, conflitti e annullamento restano da collaudare con fixture sintetiche; non segnare superati i casi hardware tramite CI.
 
 **Eseguire solo su file di prova, mai su dati importanti.** Il passaggio della CI non sostituisce un collaudo manuale della GUI e delle operazioni.

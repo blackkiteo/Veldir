@@ -116,6 +116,35 @@ pub fn valid_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn validate_copy_destination(
+    source: &Path,
+    destination: &Path,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    check_cancelled(cancelled)?;
+    let meta =
+        fs::symlink_metadata(source).map_err(|e| format!("Sorgente {}: {e}", source.display()))?;
+    if meta.file_type().is_symlink() || is_windows_reparse_point(&meta) {
+        return Err(format!(
+            "Collegamento o junction non supportati: {}",
+            source.display()
+        ));
+    }
+    if !meta.is_file() && !meta.is_dir() {
+        return Err("Tipo di file non supportato".into());
+    }
+    if meta.is_dir() {
+        check_cancelled(cancelled)?;
+        let source = source.canonicalize().map_err(|e| e.to_string())?;
+        check_cancelled(cancelled)?;
+        let destination = destination.canonicalize().map_err(|e| e.to_string())?;
+        if destination.starts_with(source) {
+            return Err("Non è possibile copiare una cartella al suo interno".into());
+        }
+    }
+    Ok(())
+}
+
 fn target_path(source: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
     if !dest_dir.is_dir() {
         return Err("La destinazione non è una cartella accessibile".into());
@@ -124,7 +153,7 @@ fn target_path(source: &Path, dest_dir: &Path) -> Result<PathBuf, String> {
         .file_name()
         .ok_or("Impossibile identificare il nome sorgente")?;
     let target = dest_dir.join(name);
-    if target.symlink_metadata().is_ok() {
+    if path_exists(&target)? {
         return Err(format!(
             "Esiste già un elemento con il nome {}: nessuna sovrascrittura eseguita",
             target.display()
@@ -160,31 +189,224 @@ fn copy_no_links(source: &Path, target: &Path) -> Result<(), String> {
     copy_tree_progress(source, target, &cancelled, &mut |_| {})
 }
 
-/// Refuses links and junctions in both the preflight and the copy itself.
-pub(crate) fn tree_size(source: &Path) -> Result<u64, String> {
-    let mut stack = vec![source.to_path_buf()];
-    let mut total = 0u64;
-    while let Some(path) = stack.pop() {
-        let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-        if meta.file_type().is_symlink() || is_windows_reparse_point(&meta) {
-            return Err(format!(
-                "Collegamento o junction non supportati: {}",
-                path.display()
-            ));
-        }
-        if meta.is_dir() {
-            for child in fs::read_dir(&path).map_err(|e| e.to_string())? {
-                stack.push(child.map_err(|e| e.to_string())?.path());
-            }
-        } else if meta.is_file() {
-            total = total
-                .checked_add(meta.len())
-                .ok_or("Dimensione complessiva troppo grande")?;
-        } else {
-            return Err("Tipo di file non supportato".into());
+/// One budget is shared by every source in a copy batch. Entries are charged
+/// before enqueue (including roots); the pending path queue has its own bound.
+struct ScanBudget {
+    entries: usize,
+    pending_bytes: usize,
+    max_entries: usize,
+    max_pending_bytes: usize,
+}
+impl Default for ScanBudget {
+    fn default() -> Self {
+        Self {
+            entries: 0,
+            pending_bytes: 0,
+            max_entries: 100_000,
+            max_pending_bytes: 32 * 1024 * 1024,
         }
     }
-    Ok(total)
+}
+impl ScanBudget {
+    fn path_bytes(path: &Path) -> Result<usize, String> {
+        path.as_os_str()
+            .len()
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(std::mem::size_of::<PathBuf>()))
+            .ok_or_else(|| "Percorso troppo grande per il preflight".into())
+    }
+    fn enqueue(&mut self, path: &Path) -> Result<usize, String> {
+        let entries = self
+            .entries
+            .checked_add(1)
+            .ok_or("Troppi elementi nel preflight")?;
+        if entries > self.max_entries {
+            return Err(format!(
+                "Preflight interrotto: massimo {} elementi per batch",
+                self.max_entries
+            ));
+        }
+        let bytes = Self::path_bytes(path)?;
+        let pending_bytes = self
+            .pending_bytes
+            .checked_add(bytes)
+            .ok_or("Memoria preflight esaurita")?;
+        if pending_bytes > self.max_pending_bytes {
+            return Err("Preflight interrotto: limite memoria percorsi pendenti".into());
+        }
+        self.entries = entries;
+        self.pending_bytes = pending_bytes;
+        Ok(bytes)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScanOperation {
+    Metadata,
+    ReadDir,
+    Next,
+}
+
+#[cfg(test)]
+struct ScanTestSettings {
+    max_entries: usize,
+    max_pending_bytes: usize,
+    before_io: Box<dyn FnMut(ScanOperation, &Path) -> Result<(), String>>,
+}
+#[cfg(test)]
+thread_local! {
+    static SCAN_TEST_SETTINGS: std::cell::RefCell<Option<ScanTestSettings>> = const { std::cell::RefCell::new(None) };
+}
+/// Thread-local fault injection keeps parallel tests independent; never compiled in release.
+#[cfg(test)]
+pub(crate) fn with_scan_test_settings<T>(
+    max_entries: usize,
+    max_pending_bytes: usize,
+    before_io: impl FnMut(ScanOperation, &Path) -> Result<(), String> + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Restore(Option<ScanTestSettings>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SCAN_TEST_SETTINGS.with(|settings| {
+                settings.replace(self.0.take());
+            });
+        }
+    }
+    let previous = SCAN_TEST_SETTINGS.with(|settings| {
+        settings.replace(Some(ScanTestSettings {
+            max_entries,
+            max_pending_bytes,
+            before_io: Box::new(before_io),
+        }))
+    });
+    let _restore = Restore(previous);
+    action()
+}
+
+pub(crate) fn check_cancelled(cancelled: &AtomicBool) -> Result<(), String> {
+    if cancelled.load(Ordering::Relaxed) {
+        Err("Preflight annullato; nessun nuovo elemento trasferito".into())
+    } else {
+        Ok(())
+    }
+}
+
+/// Only a genuine NotFound means absence; network and permission errors fail closed.
+pub(crate) fn path_exists(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "Impossibile verificare {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn scan_tree(
+    source: &Path,
+    cancelled: &AtomicBool,
+    budget: &mut ScanBudget,
+    before_io: &mut impl FnMut(ScanOperation, &Path) -> Result<(), String>,
+) -> Result<u64, String> {
+    check_cancelled(cancelled)?;
+    let bytes = budget.enqueue(source)?;
+    let mut stack = vec![(source.to_path_buf(), bytes)];
+    let mut total = 0u64;
+    let result = (|| {
+        while let Some((path, bytes)) = stack.pop() {
+            budget.pending_bytes -= bytes;
+            check_cancelled(cancelled)?;
+            before_io(ScanOperation::Metadata, &path)?;
+            check_cancelled(cancelled)?;
+            let meta = fs::symlink_metadata(&path)
+                .map_err(|e| format!("Preflight {}: {e}", path.display()))?;
+            if meta.file_type().is_symlink() || is_windows_reparse_point(&meta) {
+                return Err(format!(
+                    "Collegamento o junction non supportati: {}",
+                    path.display()
+                ));
+            }
+            if meta.is_dir() {
+                check_cancelled(cancelled)?;
+                before_io(ScanOperation::ReadDir, &path)?;
+                check_cancelled(cancelled)?;
+                let mut children = fs::read_dir(&path)
+                    .map_err(|e| format!("Preflight {}: {e}", path.display()))?;
+                loop {
+                    check_cancelled(cancelled)?;
+                    before_io(ScanOperation::Next, &path)?;
+                    check_cancelled(cancelled)?;
+                    let Some(child) = children.next() else {
+                        break;
+                    };
+                    let child = child
+                        .map_err(|e| format!("Preflight {}: {e}", path.display()))?
+                        .path();
+                    let bytes = budget.enqueue(&child)?;
+                    stack.push((child, bytes));
+                }
+            } else if meta.is_file() {
+                total = total
+                    .checked_add(meta.len())
+                    .ok_or("Dimensione complessiva troppo grande")?;
+            } else {
+                return Err("Tipo di file non supportato".into());
+            }
+        }
+        Ok(total)
+    })();
+    // On failure queued paths are dropped together with their memory charge.
+    for (_, bytes) in stack {
+        budget.pending_bytes -= bytes;
+    }
+    result
+}
+
+pub(crate) fn preflight_copy_sizes(
+    sources: &[PathBuf],
+    cancelled: &AtomicBool,
+) -> Result<Vec<u64>, String> {
+    let mut budget = ScanBudget::default();
+    #[cfg(test)]
+    SCAN_TEST_SETTINGS.with(|settings| {
+        if let Some(settings) = settings.borrow().as_ref() {
+            budget.max_entries = settings.max_entries;
+            budget.max_pending_bytes = settings.max_pending_bytes;
+        }
+    });
+    preflight_copy_sizes_with(sources, cancelled, &mut budget, &mut |_operation, _path| {
+        #[cfg(test)]
+        SCAN_TEST_SETTINGS.with(|settings| match settings.borrow_mut().as_mut() {
+            Some(settings) => (settings.before_io)(_operation, _path),
+            None => Ok(()),
+        })?;
+        Ok(())
+    })
+}
+fn preflight_copy_sizes_with(
+    sources: &[PathBuf],
+    cancelled: &AtomicBool,
+    budget: &mut ScanBudget,
+    before_io: &mut impl FnMut(ScanOperation, &Path) -> Result<(), String>,
+) -> Result<Vec<u64>, String> {
+    let mut sizes = Vec::new();
+    for source in sources {
+        check_cancelled(cancelled)?;
+        sizes.push(scan_tree(source, cancelled, budget, before_io)?);
+    }
+    Ok(sizes)
+}
+
+#[cfg(test)]
+pub(crate) fn tree_size(source: &Path) -> Result<u64, String> {
+    scan_tree(
+        source,
+        &AtomicBool::new(false),
+        &mut ScanBudget::default(),
+        &mut |_, _| Ok(()),
+    )
 }
 
 /// Each write is to a private staging path; a cancellation cleans that staging
@@ -219,7 +441,13 @@ fn copy_tree_progress_with_sync(
     }
     if meta.is_dir() {
         fs::create_dir(target).map_err(|e| e.to_string())?;
-        for child in fs::read_dir(source).map_err(|e| e.to_string())? {
+        check_cancelled(cancelled)?;
+        let mut children = fs::read_dir(source).map_err(|e| e.to_string())?;
+        loop {
+            check_cancelled(cancelled)?;
+            let Some(child) = children.next() else {
+                break;
+            };
             let child = child.map_err(|e| e.to_string())?;
             copy_tree_progress_with_sync(
                 &child.path(),
@@ -258,7 +486,7 @@ fn copy_tree_progress_with_sync(
     Ok(())
 }
 
-fn copy_one_progress(
+pub(crate) fn copy_one_progress(
     source: &Path,
     destination_folder: &Path,
     cancelled: &AtomicBool,
@@ -356,12 +584,21 @@ pub(crate) fn rename_no_replace(_source: &Path, _target: &Path) -> io::Result<()
 
 /// Preflight every source before a batch starts. This cannot rule out concurrent
 /// filesystem changes: a failed batch can therefore be PARTIALLY completed.
-fn preflight_batch(sources: &[PathBuf], destination_folder: &Path) -> Result<(), String> {
+fn preflight_batch(
+    sources: &[PathBuf],
+    destination_folder: &Path,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
     if sources.is_empty() {
         return Err("Nessun elemento selezionato".into());
     }
+    check_cancelled(cancelled)?;
+    if sources.len() > 100_000 {
+        return Err("Preflight interrotto: massimo 100000 elementi per batch".into());
+    }
     let mut names = BTreeSet::new();
     for source in sources {
+        check_cancelled(cancelled)?;
         // Reject duplicate destination names, even if case differs (Windows semantics).
         let name = source
             .file_name()
@@ -371,9 +608,8 @@ fn preflight_batch(sources: &[PathBuf], destination_folder: &Path) -> Result<(),
         if !names.insert(name) {
             return Err("Due sorgenti hanno lo stesso nome".into());
         }
-        if source.symlink_metadata().is_err() {
-            return Err(format!("Sorgente non disponibile: {}", source.display()));
-        }
+        fs::symlink_metadata(source).map_err(|e| format!("Sorgente {}: {e}", source.display()))?;
+        check_cancelled(cancelled)?;
         target_path(source, destination_folder)?;
     }
     Ok(())
@@ -484,13 +720,12 @@ pub fn execute_progress<F: Fn(Progress)>(
             sources,
             destination_folder,
         } => {
-            preflight_batch(&sources, &destination_folder)?;
-            let mut total_bytes = 0u64;
-            for source in &sources {
-                total_bytes = total_bytes
-                    .checked_add(tree_size(source)?)
-                    .ok_or("Dimensione complessiva troppo grande")?;
-            }
+            preflight_batch(&sources, &destination_folder, cancelled)?;
+            let sizes = preflight_copy_sizes(&sources, cancelled)?;
+            let total_bytes = sizes.into_iter().try_fold(0u64, |sum, bytes| {
+                sum.checked_add(bytes)
+                    .ok_or("Dimensione complessiva troppo grande")
+            })?;
             let total_items = sources.len();
             let mut progress = Progress {
                 done_bytes: 0,
@@ -534,7 +769,7 @@ pub fn execute_progress<F: Fn(Progress)>(
             sources,
             destination_folder,
         } => {
-            preflight_batch(&sources, &destination_folder)?;
+            preflight_batch(&sources, &destination_folder, cancelled)?;
             execute_batch_progress(sources, cancelled, notify, |source| Job::Move {
                 source,
                 destination_folder: destination_folder.clone(),
@@ -685,7 +920,7 @@ pub fn execute(job: Job) -> Result<String, String> {
             sources,
             destination_folder,
         } => {
-            preflight_batch(&sources, &destination_folder)?;
+            preflight_batch(&sources, &destination_folder, &AtomicBool::new(false))?;
             run_batch(sources, |source| Job::Copy {
                 source,
                 destination_folder: destination_folder.clone(),
@@ -695,7 +930,7 @@ pub fn execute(job: Job) -> Result<String, String> {
             sources,
             destination_folder,
         } => {
-            preflight_batch(&sources, &destination_folder)?;
+            preflight_batch(&sources, &destination_folder, &AtomicBool::new(false))?;
             run_batch(sources, |source| Job::Move {
                 source,
                 destination_folder: destination_folder.clone(),
@@ -717,6 +952,168 @@ pub fn execute(job: Job) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scan_budget_counts_roots_globally_and_accepts_exact_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let a = root.path().join("a.txt");
+        let b = root.path().join("b.txt");
+        fs::write(&a, b"AAA").unwrap();
+        fs::write(&b, b"BBBB").unwrap();
+        let sources = vec![a, b];
+        let mut budget = ScanBudget {
+            max_entries: 1,
+            ..ScanBudget::default()
+        };
+        let error = preflight_copy_sizes_with(
+            &sources,
+            &AtomicBool::new(false),
+            &mut budget,
+            &mut |_, _| Ok(()),
+        )
+        .unwrap_err();
+        assert!(error.contains("massimo 1 elementi"));
+        assert_eq!(budget.entries, 1);
+        assert_eq!(budget.pending_bytes, 0);
+        budget = ScanBudget {
+            max_entries: 2,
+            ..ScanBudget::default()
+        };
+        assert_eq!(
+            preflight_copy_sizes_with(
+                &sources,
+                &AtomicBool::new(false),
+                &mut budget,
+                &mut |_, _| Ok(())
+            )
+            .unwrap(),
+            vec![3, 4]
+        );
+        assert_eq!(budget.entries, 2);
+        assert_eq!(budget.pending_bytes, 0);
+    }
+
+    #[test]
+    fn scan_pending_memory_and_entry_limits_apply_before_enqueue() {
+        let root = tempfile::tempdir().unwrap();
+        for n in 0..3 {
+            fs::write(root.path().join(format!("child-{n}.txt")), b"X").unwrap();
+        }
+        let mut budget = ScanBudget {
+            max_entries: 2,
+            ..ScanBudget::default()
+        };
+        let error = scan_tree(
+            root.path(),
+            &AtomicBool::new(false),
+            &mut budget,
+            &mut |_, _| Ok(()),
+        )
+        .unwrap_err();
+        assert!(error.contains("massimo 2 elementi"));
+        assert_eq!(budget.entries, 2);
+        assert_eq!(budget.pending_bytes, 0);
+        let max_pending_bytes = ScanBudget::path_bytes(&root.path().join("child-0.txt")).unwrap();
+        budget = ScanBudget {
+            max_pending_bytes,
+            ..ScanBudget::default()
+        };
+        let error = scan_tree(
+            root.path(),
+            &AtomicBool::new(false),
+            &mut budget,
+            &mut |_, _| Ok(()),
+        )
+        .unwrap_err();
+        assert!(error.contains("limite memoria"));
+        assert_eq!(budget.entries, 2);
+        assert_eq!(budget.pending_bytes, 0);
+    }
+
+    #[test]
+    fn scan_cancellation_is_checked_before_each_filesystem_operation() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("child.txt"), b"X").unwrap();
+        for operation in [
+            ScanOperation::Metadata,
+            ScanOperation::ReadDir,
+            ScanOperation::Next,
+        ] {
+            let cancelled = AtomicBool::new(false);
+            let mut budget = ScanBudget::default();
+            let mut hit = false;
+            let error = scan_tree(root.path(), &cancelled, &mut budget, &mut |current, _| {
+                if current == operation {
+                    hit = true;
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+                Ok(())
+            })
+            .unwrap_err();
+            assert!(hit);
+            assert!(error.contains("annullato"), "{error}");
+            assert_eq!(budget.pending_bytes, 0);
+        }
+    }
+
+    #[test]
+    fn scan_io_failures_propagate_without_partial_size() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("child.txt"), b"X").unwrap();
+        for operation in [
+            ScanOperation::Metadata,
+            ScanOperation::ReadDir,
+            ScanOperation::Next,
+        ] {
+            let mut budget = ScanBudget::default();
+            let error = scan_tree(
+                root.path(),
+                &AtomicBool::new(false),
+                &mut budget,
+                &mut |current, _| {
+                    if current == operation {
+                        Err("simulated access or network error".into())
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error, "simulated access or network error");
+            assert_eq!(budget.pending_bytes, 0);
+        }
+    }
+
+    #[test]
+    fn copy_many_global_budget_failure_does_not_publish_first_source() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        let first = root.path().join("first.txt");
+        let second = root.path().join("second.txt");
+        fs::write(&first, b"FIRST").unwrap();
+        fs::write(&second, b"SECOND").unwrap();
+        let result = with_scan_test_settings(
+            1,
+            1024 * 1024,
+            |_, _| Ok(()),
+            || {
+                execute_progress(
+                    Job::CopyMany {
+                        sources: vec![first.clone(), second.clone()],
+                        destination_folder: destination.clone(),
+                    },
+                    &AtomicBool::new(false),
+                    |_| {},
+                )
+            },
+        )
+        .unwrap_err();
+        assert!(result.contains("massimo 1 elementi"));
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
+        assert_eq!(fs::read(first).unwrap(), b"FIRST");
+        assert_eq!(fs::read(second).unwrap(), b"SECOND");
+    }
 
     #[test]
     fn sync_failure_prevents_publication_and_preserves_source() {

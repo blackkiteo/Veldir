@@ -1,4 +1,6 @@
-use crate::fs_ops::{self, Job, Progress};
+#[cfg(test)]
+use crate::fs_ops::Job;
+use crate::fs_ops::{self, Progress};
 #[cfg(test)]
 use std::io::Read;
 use std::{
@@ -405,6 +407,7 @@ pub fn execute(
     cancelled: &AtomicBool,
     notify: impl Fn(Progress),
 ) -> Result<String, String> {
+    fs_ops::check_cancelled(cancelled)?;
     if !destination.is_dir() {
         return Err("Destinazione non accessibile".into());
     }
@@ -412,17 +415,37 @@ pub fn execute(
         return Err("Nessuna sorgente selezionata".into());
     }
     let total = sources.len();
-    // Moving on one volume is instant. When Windows falls back to copying
-    // between volumes the byte progress must still have a real denominator.
-    let total_bytes = sources
-        .iter()
-        .filter(|s| {
-            policy != ConflictPolicy::Skip
-                || s.file_name()
-                    .is_some_and(|n| destination.join(n).symlink_metadata().is_err())
-        })
-        .filter_map(|s| fs_ops::tree_size(s).ok())
-        .fold(0u64, |sum, n| sum.saturating_add(n));
+    fs_ops::check_cancelled(cancelled)?;
+    if sources.len() > 100_000 {
+        return Err("Preflight interrotto: massimo 100000 elementi per batch".into());
+    }
+    // Same-volume moves use item progress and do not traverse directory contents.
+    // Copy sizes are cached once for the whole batch; errors stop before writes.
+    let mut source_bytes = vec![0u64; sources.len()];
+    let mut planned_skips = vec![false; sources.len()];
+    let mut scan_sources = Vec::new();
+    let mut scan_indices = Vec::new();
+    for (index, source) in sources.iter().enumerate() {
+        fs_ops::check_cancelled(cancelled)?;
+        let name = source.file_name().ok_or("Nome sorgente non valido")?;
+        let conflict = fs_ops::path_exists(&destination.join(name))?;
+        planned_skips[index] = conflict && policy == ConflictPolicy::Skip;
+        if !cut && !planned_skips[index] {
+            fs_ops::validate_copy_destination(source, &destination, cancelled)?;
+            scan_sources.push(source.clone());
+            scan_indices.push(index);
+        }
+    }
+    for (index, bytes) in scan_indices
+        .into_iter()
+        .zip(fs_ops::preflight_copy_sizes(&scan_sources, cancelled)?)
+    {
+        source_bytes[index] = bytes;
+    }
+    let total_bytes = source_bytes.iter().try_fold(0u64, |sum, bytes| {
+        sum.checked_add(*bytes)
+            .ok_or("Dimensione complessiva troppo grande")
+    })?;
     let mut completed_bytes = 0u64;
     let mut done = 0;
     let mut skipped = 0;
@@ -433,6 +456,7 @@ pub fn execute(
     if policy == ConflictPolicy::Stop {
         let mut planned = std::collections::HashSet::new();
         for source in &sources {
+            fs_ops::check_cancelled(cancelled)?;
             let name = source.file_name().ok_or("Nome sorgente non valido")?;
             // Windows usually compares filenames case-insensitively. A
             // batch with "Report.txt" and "report.TXT" must be rejected
@@ -443,7 +467,7 @@ pub fn execute(
                     name.to_string_lossy()
                 ));
             }
-            if destination.join(name).symlink_metadata().is_ok() {
+            if fs_ops::path_exists(&destination.join(name))? {
                 return Err(format!(
                     "Conflitto: {}. Nessun elemento trasferito.",
                     name.to_string_lossy()
@@ -451,17 +475,39 @@ pub fn execute(
             }
         }
     }
-    for source in sources {
+    for (source_index, source) in sources.into_iter().enumerate() {
         if cancelled.load(Ordering::Relaxed) {
             details.push("Operazione annullata; gli elementi completati sono conservati.".into());
             break;
+        }
+        // An item excluded from sizing is never promoted to a transfer when
+        // its initial conflict disappears after the plan was validated.
+        if planned_skips[source_index] {
+            skipped += 1;
+            details.push(format!("Saltato: {}", source.display()));
+            notify(Progress {
+                done_items: done + skipped + errors.len() + partials.len(),
+                total_items: total,
+                done_bytes: completed_bytes,
+                total_bytes,
+            });
+            continue;
         }
         let Some(name) = source.file_name() else {
             errors.push(format!("Sorgente non valida: {}", source.display()));
             continue;
         };
         let original = destination.join(name);
-        let conflict = original.symlink_metadata().is_ok();
+        let conflict = match fs_ops::path_exists(&original) {
+            Ok(conflict) => conflict,
+            Err(error) => {
+                errors.push(format!("{}: {error}", source.display()));
+                if policy == ConflictPolicy::Stop {
+                    break;
+                }
+                continue;
+            }
+        };
         if conflict && policy == ConflictPolicy::Stop {
             errors.push(format!(
                 "Conflitto sopraggiunto: {}. Trasferimento interrotto.",
@@ -506,8 +552,9 @@ pub fn execute(
                 fs_ops::rename_no_replace,
                 |path| trash::delete(path).map_err(|error| error.to_string()),
             )
+            .map(|_| 0)
         } else {
-            (|| -> Result<(), MoveFailure> {
+            (|| -> Result<u64, MoveFailure> {
                 // Copy into a private sibling, then atomically publish without replacement.
                 let staging = tempfile::Builder::new()
                     .prefix(".veldir-transfer-")
@@ -521,19 +568,28 @@ pub fn execute(
                         total_bytes,
                     })
                 };
-                fs_ops::execute_progress(
-                    Job::CopyMany {
-                        sources: vec![source.clone()],
-                        destination_folder: staging.path().to_path_buf(),
-                    },
-                    cancelled,
-                    &progress as &dyn Fn(Progress),
-                )
+                let mut copied_bytes = 0u64;
+                let mut last_report = std::time::Instant::now();
+                fs_ops::copy_one_progress(&source, staging.path(), cancelled, &mut |bytes| {
+                    copied_bytes = copied_bytes.saturating_add(bytes);
+                    if last_report.elapsed() >= std::time::Duration::from_millis(120) {
+                        progress(Progress {
+                            done_bytes: copied_bytes,
+                            ..Progress::default()
+                        });
+                        last_report = std::time::Instant::now();
+                    }
+                })
                 .and_then(|_| {
+                    progress(Progress {
+                        done_bytes: copied_bytes,
+                        ..Progress::default()
+                    });
                     if cancelled.load(Ordering::Relaxed) {
                         Err("Annullato prima della pubblicazione".into())
                     } else {
                         fs_ops::rename_no_replace(&staging.path().join(name), &target)
+                            .map(|_| copied_bytes)
                             .map_err(|e| e.to_string())
                     }
                 })
@@ -541,9 +597,8 @@ pub fn execute(
             })()
         };
         match result {
-            Ok(_) => {
-                completed_bytes =
-                    completed_bytes.saturating_add(fs_ops::tree_size(&target).unwrap_or(0));
+            Ok(copied_bytes) => {
+                completed_bytes = completed_bytes.saturating_add(copied_bytes);
                 done += 1;
                 details.push(format!(
                     "Completato: {} → {}",
@@ -601,7 +656,7 @@ fn unique_target(parent: &Path, name: &str) -> Result<PathBuf, String> {
         .unwrap_or_default();
     for i in 1..=10_000 {
         let candidate = parent.join(format!("{stem} ({i}){ext}"));
-        if candidate.symlink_metadata().is_err() {
+        if !fs_ops::path_exists(&candidate)? {
             return Ok(candidate);
         }
     }
@@ -610,6 +665,219 @@ fn unique_target(parent: &Path, name: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn planned_skip_stays_skipped_when_conflict_disappears_after_first_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        let first = root.path().join("first.txt");
+        let second = root.path().join("second.txt");
+        fs::write(&first, b"FIRST").unwrap();
+        fs::write(&second, b"NEVER COPY").unwrap();
+        let conflict = destination.join("second.txt");
+        let saved = destination.join("saved-second.txt");
+        fs::write(&conflict, b"PRESERVE CONFLICT").unwrap();
+        let visits = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let recorded = visits.clone();
+        let renamed = std::cell::Cell::new(false);
+        let progress = std::cell::RefCell::new(Vec::new());
+        let summary = fs_ops::with_scan_test_settings(
+            1,
+            1024 * 1024,
+            move |operation, path| {
+                if operation == fs_ops::ScanOperation::Metadata {
+                    recorded.borrow_mut().push(path.to_path_buf());
+                }
+                Ok(())
+            },
+            || {
+                execute(
+                    vec![first.clone(), second.clone()],
+                    destination.clone(),
+                    false,
+                    ConflictPolicy::Skip,
+                    &AtomicBool::new(false),
+                    |p| {
+                        progress.borrow_mut().push(p);
+                        if p.done_items == 1 && !renamed.replace(true) {
+                            fs::rename(&conflict, &saved).unwrap();
+                        }
+                    },
+                )
+            },
+        )
+        .unwrap();
+        assert!(summary.contains("Completati 1/2"), "{summary}");
+        assert!(summary.contains("saltati 1"), "{summary}");
+        assert_eq!(*visits.borrow(), vec![first.clone()]);
+        assert_eq!(fs::read(first).unwrap(), b"FIRST");
+        assert_eq!(fs::read(second).unwrap(), b"NEVER COPY");
+        assert_eq!(fs::read(destination.join("first.txt")).unwrap(), b"FIRST");
+        assert_eq!(fs::read(saved).unwrap(), b"PRESERVE CONFLICT");
+        assert!(!conflict.exists());
+        let progress = progress.borrow();
+        let last = progress.last().unwrap();
+        assert_eq!(last.done_items, 2);
+        assert_eq!(last.done_bytes, 5);
+        assert_eq!(last.total_bytes, 5);
+    }
+
+    #[test]
+    fn transfer_preflight_cancellation_budget_and_io_errors_never_write() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        fs::write(destination.join("existing.txt"), b"KEEP").unwrap();
+        let first = root.path().join("first.txt");
+        let second = root.path().join("second.txt");
+        fs::write(&first, b"FIRST").unwrap();
+        fs::write(&second, b"SECOND").unwrap();
+        for scenario in 0..5 {
+            let cancelled = std::sync::Arc::new(AtomicBool::new(scenario == 0));
+            let injected_cancel = cancelled.clone();
+            let second_path = second.clone();
+            let error = fs_ops::with_scan_test_settings(
+                if scenario == 1 { 1 } else { 100 },
+                if scenario == 2 { 1 } else { 1024 * 1024 },
+                move |operation, path| {
+                    if operation == fs_ops::ScanOperation::Metadata && path == second_path {
+                        if scenario == 3 {
+                            injected_cancel.store(true, Ordering::Relaxed);
+                        }
+                        if scenario == 4 {
+                            return Err("simulated network read failure".into());
+                        }
+                    }
+                    Ok(())
+                },
+                || {
+                    execute(
+                        vec![first.clone(), second.clone()],
+                        destination.clone(),
+                        false,
+                        ConflictPolicy::Stop,
+                        &cancelled,
+                        |_| panic!("Preflight failure must precede copy progress"),
+                    )
+                },
+            )
+            .unwrap_err();
+            assert!(!error.is_empty());
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+            assert_eq!(fs::read(destination.join("existing.txt")).unwrap(), b"KEEP");
+            assert_eq!(fs::read(&first).unwrap(), b"FIRST");
+            assert_eq!(fs::read(&second).unwrap(), b"SECOND");
+        }
+    }
+
+    #[test]
+    fn transfer_scans_each_source_once_and_reports_actual_bytes_without_destination_scan() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        let first = root.path().join("first.txt");
+        let second = root.path().join("second.txt");
+        fs::write(&first, b"A").unwrap();
+        fs::write(&second, b"B").unwrap();
+        let visits = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let recorded = visits.clone();
+        let progress = std::cell::RefCell::new(Vec::new());
+        let changed = std::cell::Cell::new(false);
+        let summary = fs_ops::with_scan_test_settings(
+            2,
+            1024 * 1024,
+            move |operation, path| {
+                if operation == fs_ops::ScanOperation::Metadata {
+                    recorded.borrow_mut().push(path.to_path_buf());
+                }
+                Ok(())
+            },
+            || {
+                execute(
+                    vec![first.clone(), second.clone()],
+                    destination.clone(),
+                    false,
+                    ConflictPolicy::Stop,
+                    &AtomicBool::new(false),
+                    |p| {
+                        progress.borrow_mut().push(p);
+                        if p.done_items == 1 && !changed.replace(true) {
+                            fs::write(&second, b"BBBB").unwrap();
+                        }
+                    },
+                )
+            },
+        )
+        .unwrap();
+        assert!(summary.contains("Completati 2/2"));
+        assert_eq!(*visits.borrow(), vec![first, second]);
+        let progress = progress.borrow();
+        let last = progress.last().unwrap();
+        assert_eq!(last.total_bytes, 2);
+        assert_eq!(last.done_bytes, 5);
+        assert_eq!(fs::read(destination.join("second.txt")).unwrap(), b"BBBB");
+    }
+
+    #[test]
+    fn same_volume_directory_move_uses_item_progress_without_recursive_preflight() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&destination).unwrap();
+        fs::write(source.join("child.txt"), b"KEEP").unwrap();
+        let progress = std::cell::RefCell::new(Vec::new());
+        let summary = fs_ops::with_scan_test_settings(
+            0,
+            0,
+            |_, _| panic!("Move must not scan trees"),
+            || {
+                execute(
+                    vec![source.clone()],
+                    destination.clone(),
+                    true,
+                    ConflictPolicy::Stop,
+                    &AtomicBool::new(false),
+                    |p| progress.borrow_mut().push(p),
+                )
+            },
+        )
+        .unwrap();
+        assert!(summary.contains("Completati 1/1"));
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read(destination.join("source").join("child.txt")).unwrap(),
+            b"KEEP"
+        );
+        assert!(
+            progress
+                .borrow()
+                .iter()
+                .all(|p| p.total_bytes == 0 && p.done_bytes == 0)
+        );
+    }
+
+    #[test]
+    fn copy_descendant_is_rejected_before_staging_creation() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = source.join("destination");
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(source.join("child.txt"), b"KEEP").unwrap();
+        let error = execute(
+            vec![source.clone()],
+            destination.clone(),
+            false,
+            ConflictPolicy::KeepBoth,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(error.contains("al suo interno"));
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
+        assert_eq!(fs::read(source.join("child.txt")).unwrap(), b"KEEP");
+    }
 
     #[test]
     fn production_cross_volume_gate_preserves_file_and_folder_without_staging() {
@@ -1205,7 +1473,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_batch_reports_skips_failures_and_unprocessed_items() {
+    fn copy_preflight_failure_preserves_entire_batch() {
         let root = tempfile::tempdir().unwrap();
         let dest = root.path().join("dest");
         fs::create_dir(&dest).unwrap();
@@ -1224,11 +1492,9 @@ mod tests {
             |_| {},
         )
         .unwrap_err();
-        assert!(result.contains("Completati 1/3"), "{result}");
-        assert!(result.contains("saltati 1"), "{result}");
-        assert!(result.contains("falliti 1"), "{result}");
-        assert!(result.contains("non elaborati 0"), "{result}");
-        assert_eq!(fs::read(dest.join("kept.txt")).unwrap(), b"copy");
+        assert!(result.contains("missing.txt"), "{result}");
+        assert!(!dest.join("kept.txt").exists());
+        assert_eq!(fs::read(kept).unwrap(), b"copy");
         assert_eq!(fs::read(dest.join("skipped.txt")).unwrap(), b"existing");
     }
 

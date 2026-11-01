@@ -61,6 +61,8 @@ Destinazione primaria: Windows 11 x64; compatibilità Windows 10 x64 da collauda
 
 ### M1 — 0.11: motore trasferimenti affidabile (P0)
 
+**Apertura sorgenti regolari Windows:** metadata e lettura sullo stesso handle, apertura senza seguire il reparse point finale e sharing conservativo durante lettura/sync. Il punto di cattura è l'apertura: identità rispetto al preflight e race delle directory antenate restano aperte. [Contratto e verifiche](docs/SOURCE_HANDLES_0_11.md); cross-volume resta disabilitato e M1 non è chiusa.
+
 **Consolidamento entrypoint copie:** anche `execute(Copy/CopyMany)` delega il batch al motore comune con preflight globale; eliminato il percorso diretto escluso nella #19. L'API sincrona non espone annullamento esterno. [Contratto e verifiche](docs/COPY_ENTRYPOINTS_0_11.md); nessuna chiusura dei gate M1.
 
 **Incremento preflight:** pianificazione delle copie cancellabile fra operazioni filesystem, budget condiviso batch (100.000 elementi e 32 MiB di percorsi pendenti), errori espliciti prima dello staging e riuso dei totali. Rename same-volume per elementi senza scansione ricorsiva dei byte. Vedere [contratto e verifiche](docs/PREFLIGHT_0_11.md); non chiude il collaudo USB/SMB né M1.

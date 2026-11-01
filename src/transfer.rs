@@ -669,6 +669,124 @@ mod tests {
     }
 
     #[test]
+    fn cross_volume_file_recycle_runs_only_after_verified_published_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("original.txt");
+        let destination = root.path().join("destination");
+        let simulated_bin = root.path().join("recovered.txt");
+        fs::create_dir(&destination).unwrap();
+        fs::write(&source, b"recoverable contents").unwrap();
+        let target = destination.join("original.txt");
+        let recycle_called = std::cell::Cell::new(false);
+
+        move_one_with_rename(
+            &source,
+            &target,
+            &destination,
+            &AtomicBool::new(false),
+            &|_| {},
+            simulate_cross_volume,
+            |path| {
+                assert_eq!(fs::read(&target).unwrap(), b"recoverable contents");
+                assert_eq!(fs::read(path).unwrap(), b"recoverable contents");
+                recycle_called.set(true);
+                fs::rename(path, &simulated_bin).map_err(|e| e.to_string())
+            },
+        )
+        .unwrap();
+
+        assert!(recycle_called.get());
+        assert!(!source.exists());
+        assert_eq!(fs::read(target).unwrap(), b"recoverable contents");
+        assert_eq!(fs::read(simulated_bin).unwrap(), b"recoverable contents");
+    }
+
+    #[test]
+    fn cross_volume_file_recycle_failure_is_partial_and_preserves_both() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("original.txt");
+        let destination = root.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        fs::write(&source, b"do not lose").unwrap();
+        let target = destination.join("original.txt");
+
+        let error = move_one_with_rename(
+            &source,
+            &target,
+            &destination,
+            &AtomicBool::new(false),
+            &|_| {},
+            simulate_cross_volume,
+            |_| Err("Cestino temporaneamente non disponibile".into()),
+        )
+        .unwrap_err();
+
+        assert!(error.published);
+        assert!(error.contains("Cestino temporaneamente non disponibile"));
+        assert!(error.contains("verifica entrambe le posizioni"));
+        assert_eq!(fs::read(source).unwrap(), b"do not lose");
+        assert_eq!(fs::read(target).unwrap(), b"do not lose");
+    }
+
+    #[test]
+    fn cross_volume_file_cancel_never_attempts_recycle_or_publishes_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("big.bin");
+        let destination = root.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        fs::write(&source, vec![11u8; 1024 * 1024]).unwrap();
+        let target = destination.join("big.bin");
+        let cancelled = AtomicBool::new(false);
+        let recycle_called = std::cell::Cell::new(false);
+
+        let error = move_one_with_rename(
+            &source,
+            &target,
+            &destination,
+            &cancelled,
+            &|p| {
+                if p.done_bytes > 0 {
+                    cancelled.store(true, Ordering::Relaxed);
+                }
+            },
+            simulate_cross_volume,
+            |_| {
+                recycle_called.set(true);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(!error.published);
+        assert!(!recycle_called.get());
+        assert_eq!(fs::metadata(&source).unwrap().len(), 1024 * 1024);
+        assert!(!target.exists());
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn same_volume_rename_must_not_send_file_to_recycle_bin() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("original.txt");
+        let target = root.path().join("moved.txt");
+        fs::write(&source, b"same volume").unwrap();
+
+        move_one_with_rename(
+            &source,
+            &target,
+            root.path(),
+            &AtomicBool::new(false),
+            &|_| {},
+            fs_ops::rename_no_replace,
+            |_| panic!("Same-volume rename must never recycle the source"),
+        )
+        .unwrap();
+
+        assert!(!source.exists());
+        assert_eq!(fs::read(target).unwrap(), b"same volume");
+    }
+
+    #[test]
     fn directory_snapshot_detects_new_files_without_trashing_original() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("folder");

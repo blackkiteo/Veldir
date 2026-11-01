@@ -290,6 +290,7 @@ fn move_one_with_rename(
     cancelled: &AtomicBool,
     notify: &dyn Fn(Progress),
     rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
+    recycle_file: impl FnOnce(&Path) -> Result<(), String>,
 ) -> Result<(), MoveFailure> {
     match rename(source, target) {
         Ok(()) => return Ok(()),
@@ -351,9 +352,13 @@ fn move_one_with_rename(
             source.display()
         )));
     }
-    fs::remove_file(source).map_err(|e| {
+    // Cross-volume moves are recoverable even for individual files: use
+    // the Windows Recycle Bin rather than irreversibly removing the source.
+    // A recycle failure is a PARTIAL move: keep the verified published copy
+    // and make both locations explicit for manual reconciliation.
+    recycle_file(source).map_err(|e| {
         MoveFailure::after(format!(
-            "Copia verificata in {}, ma impossibile eliminare la sorgente {}: {e}. Entrambe le copie possono essere presenti",
+            "Copia verificata in {}, ma impossibile inviare la sorgente {} nel Cestino: {e}. La copia pubblicata viene conservata; verifica entrambe le posizioni",
             target.display(),
             source.display()
         ))
@@ -460,6 +465,7 @@ pub fn execute(
                 cancelled,
                 &progress,
                 fs_ops::rename_no_replace,
+                |path| trash::delete(path).map_err(|error| error.to_string()),
             )
         } else {
             // Copy into a private sibling, then atomically publish without replacement.
@@ -593,6 +599,7 @@ mod tests {
                 }
             },
             simulate_cross_volume,
+            |path| fs::remove_file(path).map_err(|error| error.to_string()),
         );
         assert!(result.is_err());
         assert_eq!(fs::metadata(&from).unwrap().len(), 1_000_001);
@@ -626,6 +633,7 @@ mod tests {
             &cancel,
             &|_| {},
             simulate_cross_volume,
+            |path| fs::remove_file(path).map_err(|error| error.to_string()),
         )
         .unwrap();
         assert!(!source.exists());
@@ -653,6 +661,7 @@ mod tests {
                 }
             },
             simulate_cross_volume,
+            |path| fs::remove_file(path).map_err(|error| error.to_string()),
         );
         assert!(result.is_err());
         assert_eq!(fs::metadata(source).unwrap().len(), 2 * 1024 * 1024);
@@ -688,6 +697,7 @@ mod tests {
             &AtomicBool::new(false),
             &|_| {},
             |_, _| Err(io::Error::from(io::ErrorKind::PermissionDenied)),
+            |path| fs::remove_file(path).map_err(|error| error.to_string()),
         )
         .unwrap_err();
         assert!(error.contains("Spostamento non riuscito"));

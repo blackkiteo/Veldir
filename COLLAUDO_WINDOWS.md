@@ -1,5 +1,13 @@
 # Piano di collaudo Veldir 0.10.0-dev — Windows 10/11
 
+## Directory sorgenti protette — collaudo reale aperto
+
+- DIR-H01: copiare fixture con directory vuote/Unicode e sottocartelle su USB/SMB; confrontare struttura e byte, verificare assenza di staging residuo.
+- DIR-H02: durante copia di un discendente sintetico tentare rinomina della root e di una directory annidata; registrare rifiuto o errore conservativo, quindi verificare rilascio dopo fine/annullamento.
+- DIR-H03: annullare una copia annidata o simulare destinazione non disponibile con sole fixture; nessuna directory incompleta pubblicata, contenuti sorgenti conservati e handle rilasciati.
+- DIR-H04: il limite automatico conta 256 directory contemporanee includendo la root; prove di profondità in CI non certificano share reali o snapshot coerente delle entry.
+
+
 ## Sorgenti regolari Windows — collaudo reale ancora aperto
 
 - HANDLE-01: copiare file sintetico Unicode e vuoto su disco locale/USB/SMB; confrontare byte e verificare assenza di staging residuo.

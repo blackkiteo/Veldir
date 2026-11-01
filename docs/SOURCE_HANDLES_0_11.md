@@ -26,4 +26,6 @@ Formattazione, revisione finale QA/Security e CI Windows sullo SHA finale sono r
 
 ## Gate residui
 
+Incremento successivo: i [guard directory](DIRECTORY_HANDLES_0_11.md) mantengono aperte e validate le directory visitate durante la copia dei discendenti, con limite di profondità. Non chiudono la continuità d'identità prima dell'apertura o gli antenati esterni alla radice.
+
 Cross-volume resta disabilitato. Identità prima dell'apertura, traversal e handle delle directory, ADS/ACL/metadati, albero modificato durante la copia e collaudo reale USB/SMB restano aperti. Il preflight rimane limitato e cancellabile, ma non è uno snapshot. Nessun merge, tag o release.

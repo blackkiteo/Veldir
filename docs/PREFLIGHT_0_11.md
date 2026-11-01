@@ -12,7 +12,7 @@ I totali in byte delle copie sono stime ottenute prima delle scritture. Il riuti
 
 Gli elementi già conflittuali con politica Salta sono esclusi dalla scansione ricorsiva e rimangono saltati anche se il conflitto scompare durante il job. Questo impedisce di copiare elementi mai preflightati. Errori di accesso ai percorsi non equivalgono a destinazioni assenti. Nessuna scansione segue link o junction.
 
-Il nuovo scanner globale si applica ai trasferimenti dell'app e alle copie tramite `execute_progress`. Il percorso legacy diretto `execute(Job::Copy/CopyMany)` rimane fuori da questo scanner: non dichiarare il limite come garanzia di ogni API interna. La contabilità di 32 MiB riguarda i percorsi pendenti dello scanner, non la RAM totale del processo o le capacità riservate dall'allocatore.
+Lo scanner globale si applica ai trasferimenti dell'app, alle copie tramite `execute_progress` e, dall'incremento [entrypoint unificati](COPY_ENTRYPOINTS_0_11.md), anche al percorso diretto `execute(Job::Copy/CopyMany)`. Quest'ultimo delega l'intero batch al motore comune: il budget non viene azzerato fra sorgenti. L'API sincrona non espone un token di annullamento esterno; quello resta disponibile tramite `execute_progress`. La contabilità di 32 MiB riguarda i percorsi pendenti dello scanner, non la RAM totale del processo o le capacità riservate dall'allocatore.
 
 ## Ownership e verifiche
 

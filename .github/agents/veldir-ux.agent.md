@@ -1,6 +1,6 @@
 ---
 name: veldir-ux
-description: 'Cura l'interfaccia egui, navigazione da tastiera, accessibilità, temi e pannelli.'
+description: "Cura l\u0027interfaccia egui, navigazione da tastiera, accessibilità, temi e pannelli."
 tools: ['read', 'search', 'edit', 'execute', 'agent']
 agents: ['*']
 user-invocable: true

@@ -1,5 +1,7 @@
 # Piano di collaudo Veldir 0.10.0-dev — Windows 10/11
 
+**Gate 1 novembre 2026:** cross-volume disabilitato. Per questa build i casi MOVE-X fra volumi devono verificare rifiuto esplicito, origine invariata, destinazione assente e nessun Cestino. Gli esiti sperimentali descritti sotto sono sospesi fino alla riabilitazione, non costituiscono comportamento atteso attuale. MOVE-X13 stesso volume resta valido. Copie USB/SMB, errori, conflitti e annullamento restano da collaudare con fixture sintetiche; non segnare superati i casi hardware tramite CI.
+
 **Eseguire solo su file di prova, mai su dati importanti.** Il passaggio della CI non sostituisce un collaudo manuale della GUI e delle operazioni.
 
 ## Preparazione

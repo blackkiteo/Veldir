@@ -195,6 +195,18 @@ fn copy_tree_progress(
     cancelled: &AtomicBool,
     on_chunk: &mut impl FnMut(u64),
 ) -> Result<(), String> {
+    copy_tree_progress_with_sync(source, target, cancelled, on_chunk, &mut |file| {
+        file.sync_all()
+    })
+}
+
+fn copy_tree_progress_with_sync(
+    source: &Path,
+    target: &Path,
+    cancelled: &AtomicBool,
+    on_chunk: &mut impl FnMut(u64),
+    sync_file: &mut impl FnMut(&fs::File) -> io::Result<()>,
+) -> Result<(), String> {
     if cancelled.load(Ordering::Relaxed) {
         return Err("Copia annullata: destinazione incompleta eliminata".into());
     }
@@ -209,11 +221,12 @@ fn copy_tree_progress(
         fs::create_dir(target).map_err(|e| e.to_string())?;
         for child in fs::read_dir(source).map_err(|e| e.to_string())? {
             let child = child.map_err(|e| e.to_string())?;
-            copy_tree_progress(
+            copy_tree_progress_with_sync(
                 &child.path(),
                 &target.join(child.file_name()),
                 cancelled,
                 on_chunk,
+                sync_file,
             )?;
         }
     } else if meta.is_file() {
@@ -236,6 +249,9 @@ fn copy_tree_progress(
             on_chunk(n as u64);
         }
         output.flush().map_err(|e| e.to_string())?;
+        // Request durable storage before publication. A successful read-back
+        // alone can come from the filesystem cache on USB or SMB.
+        sync_file(&output).map_err(|e| format!("Sincronizzazione copia non riuscita: {e}"))?;
     } else {
         return Err("Tipo di file non supportato".into());
     }
@@ -248,6 +264,22 @@ fn copy_one_progress(
     cancelled: &AtomicBool,
     on_chunk: &mut impl FnMut(u64),
 ) -> Result<(), String> {
+    copy_one_progress_with_sync(
+        source,
+        destination_folder,
+        cancelled,
+        on_chunk,
+        &mut |file| file.sync_all(),
+    )
+}
+
+fn copy_one_progress_with_sync(
+    source: &Path,
+    destination_folder: &Path,
+    cancelled: &AtomicBool,
+    on_chunk: &mut impl FnMut(u64),
+    sync_file: &mut impl FnMut(&fs::File) -> io::Result<()>,
+) -> Result<(), String> {
     let target = target_path(source, destination_folder)?;
     let name = source.file_name().ok_or("Nome sorgente non valido")?;
     let staging = tempfile::Builder::new()
@@ -255,7 +287,7 @@ fn copy_one_progress(
         .tempdir_in(destination_folder)
         .map_err(|e| format!("Impossibile creare area temporanea: {e}"))?;
     let staged_target = staging.path().join(name);
-    copy_tree_progress(source, &staged_target, cancelled, on_chunk)?;
+    copy_tree_progress_with_sync(source, &staged_target, cancelled, on_chunk, sync_file)?;
     if cancelled.load(Ordering::Relaxed) {
         return Err("Copia annullata: destinazione incompleta eliminata".into());
     }
@@ -685,6 +717,44 @@ pub fn execute(job: Job) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sync_failure_prevents_publication_and_preserves_source() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("destination");
+        let folder = root.path().join("source-folder");
+        fs::create_dir(&destination).unwrap();
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("child.txt"), b"KEEP CHILD").unwrap();
+        let file = root.path().join("source.txt");
+        fs::write(&file, b"KEEP SOURCE").unwrap();
+        fs::write(destination.join("existing.txt"), b"KEEP DESTINATION").unwrap();
+        for source in [&file, &folder] {
+            let mut sync_calls = 0;
+            let error = copy_one_progress_with_sync(
+                source,
+                &destination,
+                &AtomicBool::new(false),
+                &mut |_| {},
+                &mut |staged| {
+                    sync_calls += 1;
+                    assert!(staged.metadata().unwrap().len() > 0);
+                    Err(io::Error::from(io::ErrorKind::StorageFull))
+                },
+            )
+            .unwrap_err();
+            assert_eq!(sync_calls, 1);
+            assert!(error.contains("Sincronizzazione copia non riuscita"));
+            assert!(!destination.join(source.file_name().unwrap()).exists());
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+        }
+        assert_eq!(fs::read(file).unwrap(), b"KEEP SOURCE");
+        assert_eq!(fs::read(folder.join("child.txt")).unwrap(), b"KEEP CHILD");
+        assert_eq!(
+            fs::read(destination.join("existing.txt")).unwrap(),
+            b"KEEP DESTINATION"
+        );
+    }
 
     #[test]
     #[ignore = "Misurazione esplicita, crea 1000 e 10000 file temporanei"]

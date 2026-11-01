@@ -997,7 +997,7 @@ mod tests {
     }
 
     #[test]
-    fn modified_source_during_copy_is_never_removed() {
+    fn modified_source_before_verification_is_never_removed() {
         let dir = tempfile::tempdir().unwrap();
         let from = dir.path().join("source.bin");
         let dest = dir.path().join("destination");
@@ -1011,7 +1011,9 @@ mod tests {
             &dest,
             &AtomicBool::new(false),
             &|progress| {
-                if progress.done_bytes > 0 && !changed.replace(true) {
+                // CopyMany reports this after staged copying has closed the
+                // protected source handle, but before prototype verification.
+                if progress.done_items == 1 && !changed.replace(true) {
                     fs::write(&from, vec![9u8; 1_000_001]).unwrap();
                 }
             },

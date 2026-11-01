@@ -25,6 +25,8 @@ Prima di contribuire, consultare la [checklist della Pull Request](.github/pull_
 
 ## 0.11 — gate di sicurezza dei trasferimenti (1 novembre 2026)
 
+Le sorgenti regolari Windows vengono validate e lette dallo stesso handle con apertura protetta dell'ultimo componente e sharing conservativo. La protezione parte dall'apertura; non dimostra identità rispetto al preflight e non chiude le race delle directory antenate. [Ambito e test](docs/SOURCE_HANDLES_0_11.md).
+
 Il preflight comune copre anche le API dirette `execute(Copy/CopyMany)`, senza azzerare il budget fra elementi. Per annullamento esterno e progresso usare `execute_progress`; l'API sincrona resta sincrona. [Consolidamento entrypoint](docs/COPY_ENTRYPOINTS_0_11.md).
 
 Le copie usano un preflight cancellabile fra operazioni, limitato a 100.000 elementi per batch e 32 MiB di percorsi pendenti. Errori di lettura, annullamento o superamento del budget fermano il batch prima dello staging. I totali sono stime; gli spostamenti sullo stesso volume avanzano per elementi senza scansione ricorsiva dei byte. Una chiamata SMB già bloccata rimane soggetta ai tempi del sistema. [Dettagli](docs/PREFLIGHT_0_11.md).

@@ -1,5 +1,12 @@
 # Piano di collaudo Veldir 0.10.0-dev — Windows 10/11
 
+## Sorgenti regolari Windows — collaudo reale ancora aperto
+
+- HANDLE-01: copiare file sintetico Unicode e vuoto su disco locale/USB/SMB; confrontare byte e verificare assenza di staging residuo.
+- HANDLE-02: tenere un writer aperto sulla fixture e richiedere la copia; errore esplicito, origine intatta e nessuna destinazione pubblicata. Rilasciare writer e riprovare.
+- HANDLE-03: durante copia di fixture grande, tentare modifica/rinomina della sorgente; verificare rifiuto o errore conservativo e contenuti finali. Registrare filesystem/server e risultato, senza presumere che ogni SMB rispetti le stesse semantiche del runner.
+
+
 ## Preflight copie — scenari ancora da collaudare
 
 - PREF-01: annullare durante preparazione di un albero sintetico su USB/SMB; al punto cooperativo successivo compare annullamento, senza staging/pubblicazioni. Non confondere timeout di una chiamata bloccata con mancato controllo del token.

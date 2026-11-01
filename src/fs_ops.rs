@@ -401,6 +401,81 @@ pub(crate) fn tree_size(source: &Path) -> Result<u64, String> {
     )
 }
 
+/// The capture point is this open, not the earlier path-based preflight.
+/// Windows refuses data writers and delete/rename sharing while this handle
+/// lives and opens the leaf reparse point itself rather than following it.
+/// Parent-directory races and pre-open replacement by another regular file
+/// are outside this guarantee. Other platforms do not provide this sharing lock.
+fn open_copy_source(source: &Path) -> Result<(fs::File, fs::Metadata, SystemTime), String> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        };
+        options
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .security_qos_flags(0); // SECURITY_ANONYMOUS; std adds SECURITY_SQOS_PRESENT.
+    }
+    let input = options
+        .open(source)
+        .map_err(|e| format!("Apertura sorgente protetta {}: {e}", source.display()))?;
+    let snapshot = input
+        .metadata()
+        .map_err(|e| format!("Metadata handle sorgente: {e}"))?;
+    if !snapshot.is_file()
+        || snapshot.file_type().is_symlink()
+        || is_windows_reparse_point(&snapshot)
+    {
+        return Err(format!(
+            "Handle sorgente non è un file regolare senza reparse point: {}",
+            source.display()
+        ));
+    }
+    let modified = snapshot
+        .modified()
+        .map_err(|e| format!("Data modifica handle sorgente non disponibile: {e}"))?;
+    Ok((input, snapshot, modified))
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CopySourceStage {
+    BeforeOpen,
+    Validated,
+}
+#[cfg(test)]
+thread_local! {
+    static COPY_SOURCE_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(CopySourceStage, &Path) -> Result<(), String>>>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+fn with_copy_source_hook<T>(
+    hook: impl FnMut(CopySourceStage, &Path) -> Result<(), String> + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Restore(Option<Box<dyn FnMut(CopySourceStage, &Path) -> Result<(), String>>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            COPY_SOURCE_HOOK.with(|hook| {
+                hook.replace(self.0.take());
+            });
+        }
+    }
+    let previous = COPY_SOURCE_HOOK.with(|current| current.replace(Some(Box::new(hook))));
+    let _restore = Restore(previous);
+    action()
+}
+#[cfg(test)]
+fn copy_source_checkpoint(stage: CopySourceStage, source: &Path) -> Result<(), String> {
+    COPY_SOURCE_HOOK.with(|hook| match hook.borrow_mut().as_mut() {
+        Some(hook) => hook(stage, source),
+        None => Ok(()),
+    })
+}
+
 /// Each write is to a private staging path; a cancellation cleans that staging
 /// directory instead of publishing a partial destination.
 fn copy_tree_progress_with_sync(
@@ -439,13 +514,21 @@ fn copy_tree_progress_with_sync(
             )?;
         }
     } else if meta.is_file() {
-        let mut input = fs::File::open(source).map_err(|e| e.to_string())?;
+        check_cancelled(cancelled)?;
+        #[cfg(test)]
+        copy_source_checkpoint(CopySourceStage::BeforeOpen, source)?;
+        check_cancelled(cancelled)?;
+        let (mut input, snapshot, modified) = open_copy_source(source)?;
+        #[cfg(test)]
+        copy_source_checkpoint(CopySourceStage::Validated, source)?;
+        check_cancelled(cancelled)?;
         let mut output = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(target)
             .map_err(|e| e.to_string())?;
         let mut buffer = [0u8; 256 * 1024];
+        let mut copied_bytes = 0u64;
         loop {
             if cancelled.load(Ordering::Relaxed) {
                 return Err("Copia annullata: destinazione incompleta eliminata".into());
@@ -454,6 +537,9 @@ fn copy_tree_progress_with_sync(
             if n == 0 {
                 break;
             }
+            copied_bytes = copied_bytes
+                .checked_add(n as u64)
+                .ok_or("Conteggio byte copiati troppo grande")?;
             output.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
             on_chunk(n as u64);
         }
@@ -461,6 +547,25 @@ fn copy_tree_progress_with_sync(
         // Request durable storage before publication. A successful read-back
         // alone can come from the filesystem cache on USB or SMB.
         sync_file(&output).map_err(|e| format!("Sincronizzazione copia non riuscita: {e}"))?;
+        check_cancelled(cancelled)?;
+        let current = input
+            .metadata()
+            .map_err(|e| format!("Controllo finale handle sorgente: {e}"))?;
+        let current_modified = current
+            .modified()
+            .map_err(|e| format!("Data finale handle sorgente non disponibile: {e}"))?;
+        if !current.is_file()
+            || current.file_type().is_symlink()
+            || is_windows_reparse_point(&current)
+            || copied_bytes != snapshot.len()
+            || current.len() != snapshot.len()
+            || current_modified != modified
+        {
+            return Err("Sorgente cambiata dopo l'apertura protetta; copia non pubblicata".into());
+        }
+        // Explicitly retain the protected handle through output sync and final
+        // checks; publication happens later and does not delete the source.
+        drop(input);
     } else {
         return Err("Tipo di file non supportato".into());
     }
@@ -940,6 +1045,408 @@ pub fn execute(job: Job) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    fn assert_source_handle_allows_readers_and_denies_changes(source: &Path) {
+        let reader = fs::File::open(source).expect("A concurrent reader must be allowed");
+        assert!(reader.metadata().unwrap().is_file());
+        drop(reader);
+        let writer_error = fs::OpenOptions::new().write(true).open(source).unwrap_err();
+        assert_eq!(
+            writer_error.raw_os_error(),
+            Some(32),
+            "Expected ERROR_SHARING_VIOLATION: {writer_error}"
+        );
+        let renamed = source.with_extension("denied-rename");
+        assert!(!renamed.exists());
+        assert!(
+            fs::rename(source, &renamed).is_err(),
+            "Protected source must deny rename"
+        );
+        assert!(
+            fs::remove_file(source).is_err(),
+            "Protected source must deny deletion"
+        );
+        assert!(source.exists());
+        assert!(!renamed.exists());
+    }
+
+    #[cfg(windows)]
+    fn assert_source_handle_released(source: &Path) {
+        let writer = fs::OpenOptions::new()
+            .write(true)
+            .open(source)
+            .expect("Source writer must be allowed after handle release");
+        drop(writer);
+        let renamed = source.with_extension("released-rename");
+        assert!(!renamed.exists());
+        fs::rename(source, &renamed).expect("Source rename must be allowed after handle release");
+        fs::rename(&renamed, source).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_directory_replacement_before_source_open_creates_no_output() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.txt");
+        let saved = root.path().join("saved-original.txt");
+        let output = root.path().join("output.txt");
+        fs::write(&source, b"KEEP ORIGINAL").unwrap();
+        let original = source.clone();
+        let archived = saved.clone();
+        let validated = std::rc::Rc::new(std::cell::Cell::new(false));
+        let hit = validated.clone();
+        let result = with_copy_source_hook(
+            move |stage, path| {
+                assert_eq!(path, original);
+                if stage == CopySourceStage::BeforeOpen {
+                    fs::rename(path, &archived).unwrap();
+                    fs::create_dir(path).unwrap();
+                } else {
+                    hit.set(true);
+                }
+                Ok(())
+            },
+            || {
+                copy_tree_progress_with_sync(
+                    &source,
+                    &output,
+                    &AtomicBool::new(false),
+                    &mut |_| {},
+                    &mut |file| file.sync_all(),
+                )
+            },
+        );
+        assert!(result.is_err());
+        assert!(!validated.get());
+        assert!(!output.exists());
+        assert!(source.is_dir());
+        assert_eq!(fs::read(saved).unwrap(), b"KEEP ORIGINAL");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_regular_replacement_before_open_defines_the_source_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.txt");
+        let saved = root.path().join("saved-original.txt");
+        let replacement = root.path().join("replacement.txt");
+        let output = root.path().join("output.txt");
+        fs::write(&source, b"ORIGINAL").unwrap();
+        fs::write(&replacement, b"REPLACED").unwrap();
+        let modified = fs::metadata(&source).unwrap().modified().unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&replacement)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert_eq!(
+            fs::metadata(&replacement).unwrap().len(),
+            fs::metadata(&source).unwrap().len()
+        );
+        assert_eq!(
+            fs::metadata(&replacement).unwrap().modified().unwrap(),
+            modified
+        );
+        let archived = saved.clone();
+        let incoming = replacement.clone();
+        let output_path = output.clone();
+        let result = with_copy_source_hook(
+            move |stage, path| {
+                if stage == CopySourceStage::BeforeOpen {
+                    fs::rename(path, &archived).unwrap();
+                    fs::rename(&incoming, path).unwrap();
+                } else {
+                    assert!(
+                        !output_path.exists(),
+                        "Handle validation must precede output creation"
+                    );
+                    assert_source_handle_allows_readers_and_denies_changes(path);
+                }
+                Ok(())
+            },
+            || {
+                copy_tree_progress_with_sync(
+                    &source,
+                    &output,
+                    &AtomicBool::new(false),
+                    &mut |_| {},
+                    &mut |file| file.sync_all(),
+                )
+            },
+        );
+        result.unwrap();
+        assert_eq!(fs::read(&source).unwrap(), b"REPLACED");
+        assert_eq!(fs::read(output).unwrap(), b"REPLACED");
+        assert_eq!(fs::read(saved).unwrap(), b"ORIGINAL");
+        assert_source_handle_released(&source);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_existing_writer_prevents_protected_source_open_before_output() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.txt");
+        let output = root.path().join("output.txt");
+        fs::write(&source, b"KEEP").unwrap();
+        // The default writer shares everything; the new source handle must
+        // still refuse to coexist with its existing data-write access.
+        let writer = fs::OpenOptions::new().write(true).open(&source).unwrap();
+        let error = copy_tree_progress_with_sync(
+            &source,
+            &output,
+            &AtomicBool::new(false),
+            &mut |_| {},
+            &mut |file| file.sync_all(),
+        )
+        .unwrap_err();
+        assert!(error.contains("Apertura sorgente protetta"), "{error}");
+        assert!(!output.exists());
+        drop(writer);
+        assert_eq!(fs::read(&source).unwrap(), b"KEEP");
+        assert_source_handle_released(&source);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_source_handle_remains_protected_during_chunks_and_destination_sync() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("sorgente résumé 漢字.bin");
+        let destination = root.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        let bytes = vec![0xa5; 800_000];
+        fs::write(&source, &bytes).unwrap();
+        let mut chunks = 0;
+        let mut syncs = 0;
+        copy_one_progress_with_sync(
+            &source,
+            &destination,
+            &AtomicBool::new(false),
+            &mut |_| {
+                chunks += 1;
+                assert_source_handle_allows_readers_and_denies_changes(&source);
+            },
+            &mut |staged| {
+                syncs += 1;
+                assert_source_handle_allows_readers_and_denies_changes(&source);
+                staged.sync_all()
+            },
+        )
+        .unwrap();
+        assert!(chunks >= 2);
+        assert_eq!(syncs, 1);
+        assert_eq!(fs::read(&source).unwrap(), bytes);
+        assert_eq!(
+            fs::read(destination.join(source.file_name().unwrap())).unwrap(),
+            bytes
+        );
+        assert_source_handle_released(&source);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_source_handle_is_released_after_sync_failure_and_chunk_cancellation() {
+        for sync_failure in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("source.bin");
+            let destination = root.path().join("destination");
+            fs::create_dir(&destination).unwrap();
+            let bytes = vec![0x3c; 600_000];
+            fs::write(&source, &bytes).unwrap();
+            let cancelled = AtomicBool::new(false);
+            let mut syncs = 0;
+            let error = copy_one_progress_with_sync(
+                &source,
+                &destination,
+                &cancelled,
+                &mut |_| {
+                    assert_source_handle_allows_readers_and_denies_changes(&source);
+                    if !sync_failure {
+                        cancelled.store(true, Ordering::Relaxed);
+                    }
+                },
+                &mut |staged| {
+                    syncs += 1;
+                    assert_source_handle_allows_readers_and_denies_changes(&source);
+                    if sync_failure {
+                        Err(io::Error::from(io::ErrorKind::StorageFull))
+                    } else {
+                        staged.sync_all()
+                    }
+                },
+            )
+            .unwrap_err();
+            assert_eq!(syncs, if sync_failure { 1 } else { 0 });
+            if sync_failure {
+                assert!(error.contains("Sincronizzazione copia"));
+            } else {
+                assert!(error.contains("annullata"));
+            }
+            assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
+            assert_eq!(fs::read(&source).unwrap(), bytes);
+            assert_source_handle_released(&source);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_cancel_after_source_handle_validation_creates_no_output_and_releases_handle() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.txt");
+        let output = root.path().join("output.txt");
+        fs::write(&source, b"KEEP").unwrap();
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let injected = cancelled.clone();
+        let error = with_copy_source_hook(
+            move |stage, path| {
+                if stage == CopySourceStage::Validated {
+                    assert_source_handle_allows_readers_and_denies_changes(path);
+                    injected.store(true, Ordering::Relaxed);
+                }
+                Ok(())
+            },
+            || {
+                copy_tree_progress_with_sync(
+                    &source,
+                    &output,
+                    &cancelled,
+                    &mut |_| {},
+                    &mut |file| file.sync_all(),
+                )
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("annullato"));
+        assert!(!output.exists());
+        assert_eq!(fs::read(&source).unwrap(), b"KEEP");
+        assert_source_handle_released(&source);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_final_handle_timestamp_check_rejects_metadata_change_during_sync() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.txt");
+        let destination = root.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        fs::write(&source, b"KEEP CONTENTS").unwrap();
+        let modified = fs::metadata(&source).unwrap().modified().unwrap();
+        let changed = modified + Duration::from_secs(120);
+        let error = copy_one_progress_with_sync(
+            &source,
+            &destination,
+            &AtomicBool::new(false),
+            &mut |_| {},
+            &mut |staged| {
+                // Sharing modes protect data access, not attribute-only access.
+                // Exercise the final metadata check without bypassing the data lock.
+                let attributes = fs::OpenOptions::new()
+                    .access_mode(FILE_WRITE_ATTRIBUTES)
+                    .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+                    .open(&source)?;
+                attributes.set_times(fs::FileTimes::new().set_modified(changed))?;
+                drop(attributes);
+                staged.sync_all()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("Sorgente cambiata dopo l'apertura protetta"),
+            "{error}"
+        );
+        assert_eq!(fs::metadata(&source).unwrap().modified().unwrap(), changed);
+        assert_eq!(fs::read(&source).unwrap(), b"KEEP CONTENTS");
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
+        assert_source_handle_released(&source);
+    }
+
+    #[test]
+    fn protected_source_copy_preserves_unicode_and_empty_file_contents() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        for (name, bytes) in [
+            ("vuoto résumé 漢字.txt", &b""[..]),
+            ("contenuto résumé 漢字.txt", &b"hello"[..]),
+        ] {
+            let source = root.path().join(name);
+            fs::write(&source, bytes).unwrap();
+            let validated = std::rc::Rc::new(std::cell::Cell::new(false));
+            let hit = validated.clone();
+            with_copy_source_hook(
+                move |stage, path| {
+                    if stage == CopySourceStage::Validated {
+                        hit.set(true);
+                        #[cfg(windows)]
+                        assert_source_handle_allows_readers_and_denies_changes(path);
+                        #[cfg(not(windows))]
+                        assert!(path.is_file());
+                    }
+                    Ok(())
+                },
+                || copy_one_progress(&source, &destination, &AtomicBool::new(false), &mut |_| {}),
+            )
+            .unwrap();
+            assert!(validated.get());
+            assert_eq!(fs::read(&source).unwrap(), bytes);
+            assert_eq!(fs::read(destination.join(name)).unwrap(), bytes);
+            #[cfg(windows)]
+            assert_source_handle_released(&source);
+        }
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 2);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_symlink_replacement_is_rejected_without_following_its_target() {
+        use std::os::windows::fs::symlink_file;
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source.txt");
+        let saved = root.path().join("saved-original.txt");
+        let linked = root.path().join("linked.txt");
+        let output = root.path().join("output.txt");
+        fs::write(&source, b"KEEP ORIGINAL").unwrap();
+        fs::write(&linked, b"KEEP LINK TARGET").unwrap();
+        let archived = saved.clone();
+        let reference = linked.clone();
+        let result = with_copy_source_hook(
+            move |stage, path| {
+                if stage == CopySourceStage::BeforeOpen {
+                    fs::rename(path, &archived).unwrap();
+                    symlink_file(&reference, path).expect(
+                        "Creazione symlink Windows fallita: il runner richiede CreateSymbolicLink o Developer Mode; prova non eseguita, nessuno skip automatico",
+                    );
+                } else {
+                    panic!("A reparse point must not reach validated source state");
+                }
+                Ok(())
+            },
+            || {
+                copy_tree_progress_with_sync(
+                    &source,
+                    &output,
+                    &AtomicBool::new(false),
+                    &mut |_| {},
+                    &mut |file| file.sync_all(),
+                )
+            },
+        );
+        assert!(result.is_err());
+        assert!(!output.exists());
+        assert_eq!(fs::read(saved).unwrap(), b"KEEP ORIGINAL");
+        assert_eq!(fs::read(linked).unwrap(), b"KEEP LINK TARGET");
+        assert!(
+            fs::symlink_metadata(source)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
 
     #[test]
     fn execute_copy_obeys_entry_and_pending_budgets_before_writes() {

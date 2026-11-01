@@ -1,7 +1,8 @@
 use crate::fs_ops::{self, Job, Progress};
+#[cfg(test)]
+use std::io::Read;
 use std::{
-    fs,
-    io::{self, Read},
+    fs, io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -25,6 +26,7 @@ impl MoveFailure {
             published: false,
         }
     }
+    #[cfg(test)]
     fn after(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
@@ -61,6 +63,7 @@ fn is_cross_device(error: &io::Error) -> bool {
 /// Compare every byte without loading the files into memory. Run on the
 /// transfer worker and check cancellation between reads. The source's
 /// metadata must still match its pre-copy snapshot.
+#[cfg(test)]
 fn verify_copy(
     source: &Path,
     copy: &Path,
@@ -104,6 +107,7 @@ fn verify_copy(
     Ok(())
 }
 
+#[cfg(test)]
 fn unchanged_source(source: &Path, snapshot: &fs::Metadata) -> bool {
     let Ok(now) = fs::symlink_metadata(source) else {
         return false;
@@ -120,6 +124,7 @@ fn unchanged_source(source: &Path, snapshot: &fs::Metadata) -> bool {
 /// A manifest records names, file sizes and source timestamps before any
 /// copy starts. Linking/reparse paths are never traversed, including if they
 /// appear after the initial tree-size preflight.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TreeStamp {
     is_directory: bool,
@@ -127,17 +132,18 @@ struct TreeStamp {
     modified: std::time::SystemTime,
 }
 
-#[cfg(windows)]
+#[cfg(all(test, windows))]
 fn reparse_point(meta: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     meta.file_attributes() & 0x400 != 0
 }
 
-#[cfg(not(windows))]
+#[cfg(all(test, not(windows)))]
 fn reparse_point(_meta: &fs::Metadata) -> bool {
     false
 }
 
+#[cfg(test)]
 fn snapshot_tree(root: &Path) -> Result<std::collections::BTreeMap<PathBuf, TreeStamp>, String> {
     let mut result = std::collections::BTreeMap::new();
     let mut pending = vec![root.to_path_buf()];
@@ -180,6 +186,7 @@ fn snapshot_tree(root: &Path) -> Result<std::collections::BTreeMap<PathBuf, Tree
     Ok(result)
 }
 
+#[cfg(test)]
 fn verify_folder_tree(
     source: &Path,
     replica: &Path,
@@ -228,6 +235,7 @@ fn verify_folder_tree(
 /// folder to the Windows Recycle Bin. This avoids partial recursive deletion.
 /// A recycle error is an explicit partial success: both locations are reported.
 /// The callback allows non-destructive tests without touching the OS bin.
+#[cfg(test)]
 fn move_folder_across_volumes(
     source: &Path,
     target: &Path,
@@ -281,9 +289,33 @@ fn move_folder_across_volumes(
     })
 }
 
+/// Cross-volume moves stay disabled until handle-based source protection,
+/// metadata preservation and real USB/SMB validation satisfy the M1 gate.
+/// A rejected rename must never turn into copying or recycling originals.
+fn move_one_with_rename(
+    source: &Path,
+    target: &Path,
+    _destination: &Path,
+    _cancelled: &AtomicBool,
+    _notify: &dyn Fn(Progress),
+    rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
+    _recycle_file: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), MoveFailure> {
+    match rename(source, target) {
+        Ok(()) => Ok(()),
+        Err(error) if is_cross_device(&error) => Err(MoveFailure::before(
+            "Spostamento fra volumi disabilitato per sicurezza; sorgente conservata. Usare Copia e verificare manualmente mantenendo l'originale.",
+        )),
+        Err(error) => Err(MoveFailure::before(format!(
+            "Spostamento non riuscito: {error}"
+        ))),
+    }
+}
+
 /// One file, staged on the destination volume and verified byte-for-byte.
 /// Folder moves between volumes use a separate manifest-and-Recycle-Bin path.
-fn move_one_with_rename(
+#[cfg(test)]
+fn experimental_move_one_with_rename(
     source: &Path,
     target: &Path,
     destination: &Path,
@@ -312,7 +344,7 @@ fn move_one_with_rename(
             destination,
             cancelled,
             notify,
-            |folder| trash::delete(folder).map_err(|e| e.to_string()),
+            recycle_file,
         );
     }
     if !snapshot.is_file() {
@@ -430,6 +462,13 @@ pub fn execute(
         };
         let original = destination.join(name);
         let conflict = original.symlink_metadata().is_ok();
+        if conflict && policy == ConflictPolicy::Stop {
+            errors.push(format!(
+                "Conflitto sopraggiunto: {}. Trasferimento interrotto.",
+                original.display()
+            ));
+            break;
+        }
         if conflict && policy == ConflictPolicy::Skip {
             skipped += 1;
             details.push(format!("Saltato: {}", source.display()));
@@ -468,36 +507,38 @@ pub fn execute(
                 |path| trash::delete(path).map_err(|error| error.to_string()),
             )
         } else {
-            // Copy into a private sibling, then atomically publish without replacement.
-            let staging = tempfile::Builder::new()
-                .prefix(".veldir-transfer-")
-                .tempdir_in(&destination)
-                .map_err(|e| e.to_string())?;
-            let progress = |p: Progress| {
-                notify(Progress {
-                    done_items: done + skipped + errors.len() + partials.len(),
-                    total_items: total,
-                    done_bytes: completed_bytes.saturating_add(p.done_bytes),
-                    total_bytes,
+            (|| -> Result<(), MoveFailure> {
+                // Copy into a private sibling, then atomically publish without replacement.
+                let staging = tempfile::Builder::new()
+                    .prefix(".veldir-transfer-")
+                    .tempdir_in(&destination)
+                    .map_err(|e| e.to_string())?;
+                let progress = |p: Progress| {
+                    notify(Progress {
+                        done_items: done + skipped + errors.len() + partials.len(),
+                        total_items: total,
+                        done_bytes: completed_bytes.saturating_add(p.done_bytes),
+                        total_bytes,
+                    })
+                };
+                fs_ops::execute_progress(
+                    Job::CopyMany {
+                        sources: vec![source.clone()],
+                        destination_folder: staging.path().to_path_buf(),
+                    },
+                    cancelled,
+                    &progress as &dyn Fn(Progress),
+                )
+                .and_then(|_| {
+                    if cancelled.load(Ordering::Relaxed) {
+                        Err("Annullato prima della pubblicazione".into())
+                    } else {
+                        fs_ops::rename_no_replace(&staging.path().join(name), &target)
+                            .map_err(|e| e.to_string())
+                    }
                 })
-            };
-            fs_ops::execute_progress(
-                Job::CopyMany {
-                    sources: vec![source.clone()],
-                    destination_folder: staging.path().to_path_buf(),
-                },
-                cancelled,
-                &progress as &dyn Fn(Progress),
-            )
-            .and_then(|_| {
-                if cancelled.load(Ordering::Relaxed) {
-                    Err("Annullato prima della pubblicazione".into())
-                } else {
-                    fs_ops::rename_no_replace(&staging.path().join(name), &target)
-                        .map_err(|e| e.to_string())
-                }
-            })
-            .map_err(MoveFailure::before)
+                .map_err(MoveFailure::before)
+            })()
         };
         match result {
             Ok(_) => {
@@ -569,6 +610,114 @@ fn unique_target(parent: &Path, name: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn production_cross_volume_gate_preserves_file_and_folder_without_staging() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        fs::write(destination.join("existing.txt"), b"KEEP DESTINATION").unwrap();
+        let file = root.path().join("file.txt");
+        let folder = root.path().join("folder");
+        fs::write(&file, b"KEEP SOURCE").unwrap();
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("child.txt"), b"KEEP CHILD").unwrap();
+        for source in [&file, &folder] {
+            let target = destination.join(source.file_name().unwrap());
+            let error = move_one_with_rename(
+                source,
+                &target,
+                &destination,
+                &AtomicBool::new(false),
+                &|_| panic!("Rejected move must not start copying"),
+                simulate_cross_volume,
+                |_| panic!("Rejected move must not recycle"),
+            )
+            .unwrap_err();
+            assert!(!error.published);
+            assert!(error.contains("disabilitato per sicurezza"));
+            assert!(!target.exists());
+        }
+        assert_eq!(fs::read(file).unwrap(), b"KEEP SOURCE");
+        assert_eq!(fs::read(folder.join("child.txt")).unwrap(), b"KEEP CHILD");
+        assert_eq!(
+            fs::read(destination.join("existing.txt")).unwrap(),
+            b"KEEP DESTINATION"
+        );
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn stop_conflict_after_preflight_preserves_previous_success_and_stops() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        let first = root.path().join("first.txt");
+        let second = root.path().join("second.txt");
+        fs::write(&first, b"FIRST").unwrap();
+        fs::write(&second, b"SECOND").unwrap();
+        let injected = std::cell::Cell::new(false);
+        let summary = execute(
+            vec![first.clone(), second.clone()],
+            destination.clone(),
+            false,
+            ConflictPolicy::Stop,
+            &AtomicBool::new(false),
+            |p| {
+                if p.done_items == 1 && !injected.replace(true) {
+                    fs::write(destination.join("second.txt"), b"EXTERNAL").unwrap();
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(summary.contains("Completati 1/2"), "{summary}");
+        assert!(summary.contains("falliti 1"), "{summary}");
+        assert!(summary.contains("Conflitto sopraggiunto"), "{summary}");
+        assert_eq!(fs::read(&first).unwrap(), b"FIRST");
+        assert_eq!(fs::read(&second).unwrap(), b"SECOND");
+        assert_eq!(fs::read(destination.join("first.txt")).unwrap(), b"FIRST");
+        assert_eq!(
+            fs::read(destination.join("second.txt")).unwrap(),
+            b"EXTERNAL"
+        );
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn staging_failure_after_first_copy_keeps_batch_summary() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("destination");
+        let disconnected = root.path().join("disconnected");
+        fs::create_dir(&destination).unwrap();
+        let first = root.path().join("first.txt");
+        let second = root.path().join("second.txt");
+        fs::write(&first, b"FIRST").unwrap();
+        fs::write(&second, b"SECOND").unwrap();
+        let injected = std::cell::Cell::new(false);
+        let summary = execute(
+            vec![first.clone(), second.clone()],
+            destination.clone(),
+            false,
+            ConflictPolicy::Stop,
+            &AtomicBool::new(false),
+            |p| {
+                if p.done_items == 1 && !injected.replace(true) {
+                    fs::rename(&destination, &disconnected).unwrap();
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(summary.contains("Completati 1/2"), "{summary}");
+        assert!(summary.contains("falliti 1"), "{summary}");
+        assert!(summary.contains("non elaborati 0"), "{summary}");
+        assert!(summary.contains(&first.display().to_string()), "{summary}");
+        assert!(summary.contains(&second.display().to_string()), "{summary}");
+        assert_eq!(fs::read(first).unwrap(), b"FIRST");
+        assert_eq!(fs::read(second).unwrap(), b"SECOND");
+        assert_eq!(fs::read(disconnected.join("first.txt")).unwrap(), b"FIRST");
+        assert_eq!(fs::read_dir(disconnected).unwrap().count(), 1);
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_not_same_device_error_is_recognized() {
@@ -588,7 +737,7 @@ mod tests {
         fs::write(&from, vec![3u8; 1_000_000]).unwrap();
         let to = dest.join("source.bin");
         let changed = std::cell::Cell::new(false);
-        let result = move_one_with_rename(
+        let result = experimental_move_one_with_rename(
             &from,
             &to,
             &dest,
@@ -626,7 +775,7 @@ mod tests {
         fs::write(&source, &bytes).unwrap();
         let target = to.join("référence.txt");
         let cancel = AtomicBool::new(false);
-        move_one_with_rename(
+        experimental_move_one_with_rename(
             &source,
             &target,
             &to,
@@ -650,7 +799,7 @@ mod tests {
         fs::write(&source, vec![4u8; 2 * 1024 * 1024]).unwrap();
         let target = to.join("big.bin");
         let cancel = AtomicBool::new(false);
-        let result = move_one_with_rename(
+        let result = experimental_move_one_with_rename(
             &source,
             &target,
             &to,
@@ -679,7 +828,7 @@ mod tests {
         let target = destination.join("original.txt");
         let recycle_called = std::cell::Cell::new(false);
 
-        move_one_with_rename(
+        experimental_move_one_with_rename(
             &source,
             &target,
             &destination,
@@ -710,7 +859,7 @@ mod tests {
         fs::write(&source, b"do not lose").unwrap();
         let target = destination.join("original.txt");
 
-        let error = move_one_with_rename(
+        let error = experimental_move_one_with_rename(
             &source,
             &target,
             &destination,
@@ -739,7 +888,7 @@ mod tests {
         let cancelled = AtomicBool::new(false);
         let recycle_called = std::cell::Cell::new(false);
 
-        let error = move_one_with_rename(
+        let error = experimental_move_one_with_rename(
             &source,
             &target,
             &destination,

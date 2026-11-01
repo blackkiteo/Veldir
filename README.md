@@ -23,14 +23,13 @@ Prima di contribuire, consultare la [checklist della Pull Request](.github/pull_
 - Gli spostamenti tra volumi mostrano progressi in byte oltre al conteggio elementi. Lo stato parziale è mostrato in UI come **avviso**; non come completamento.
 - L'operazione resta non transazionale: elementi già completati prima di un annullamento non vengono annullati automaticamente. Utilizza file sintetici per i test `REPORT-01…04`.
 
-## 0.11 in sviluppo — spostamento fra volumi, prima fase
-- Il comando **Sposta/Taglia** tenta prima lo spostamento atomico nella destinazione (stesso volume). Soltanto se Windows segnala `ERROR_NOT_SAME_DEVICE`, per un **file regolare** avvia una copia temporanea sul volume di destinazione.
-- Confronta **tutti i byte** della copia con l'originale, controlla che la sorgente non sia stata modificata e pubblica la copia senza sovrascrivere un nome esistente. **Solo dopo** tenta di eliminare l'originale.
-- Se la copia non riesce, la verifica fallisce oppure l'operazione viene annullata prima della pubblicazione, la sorgente non viene eliminata. Se l'errore compare **dopo** la pubblicazione (per esempio l'originale non è eliminabile), rimangono entrambe le copie e un messaggio segnala esplicitamente l'esito parziale: nessuna eliminazione automatica della copia riuscita.
-- **File fra volumi — quarto incremento sperimentale:** dopo staging, confronto byte-per-byte e pubblicazione senza sovrascritture, Veldir tenta di inviare **anche il singolo file originale al Cestino**. L'eliminazione diretta del file è stata sostituita dalla stessa politica recuperabile delle cartelle. Se il Cestino non è disponibile, la copia pubblicata rimane e il risultato è esplicitamente parziale. Il test automatico utilizza esclusivamente un Cestino simulato, mai il Cestino reale.
-- **Cartelle fra volumi — secondo incremento sperimentale:** dopo la copia in staging, Veldir verifica **struttura completa, cartelle vuote, nomi, dimensioni e ogni byte dei file**, quindi pubblica la nuova cartella senza sostituirne altre. Solo dopo tenta di inviare la directory originale al **Cestino Windows**. In caso di errore, segnala esplicitamente entrambe le posizioni: non esegue mai una cancellazione ricorsiva parziale. Collegamenti/junction, oltre 100.000 elementi, ACL/metadati speciali e rollback completo restano non supportati. **Non usare la nuova funzione su cartelle importanti prima di una prova sul tuo PC.**
-- Prima della prova su dati importanti, verificare `MOVE-X01…X10` in `COLLAUDO_WINDOWS.md`. I test automatici cartelle simulano riciclo e uso di volumi distinti: non verificano il Cestino Windows reale o condivisioni di rete.
-- La versione dichiarata rimane **0.10.0-dev** finché la milestone 0.11 non è completa, collaudata e deliberata.
+## 0.11 — gate di sicurezza dei trasferimenti (1 novembre 2026)
+
+**Lo spostamento automatico fra volumi è disabilitato.** Su `ERROR_NOT_SAME_DEVICE` il comando si ferma prima di copiare o inviare l'origine al Cestino, conservando gli originali. È possibile usare Copia e verificare manualmente il contenuto mantenendo l'origine. Gli spostamenti sullo stesso volume restano disponibili senza sovrascrittura.
+
+Le review indipendenti QA/Security hanno identificato race fra verifica e riciclo e mancata preservazione di ADS/metadati speciali. Gli helper sperimentali restano soltanto nei test; le prove simulate non abilitano la funzione. Le copie richiedono `sync_all` prima della pubblicazione; questa richiesta al sistema non certifica ogni dispositivo USB o server SMB. Dettagli e priorità in [audit trasferimenti](docs/TRANSFER_AUDIT_0_11.md).
+
+Gli incrementi precedenti avevano introdotto staging, verifica byte e riciclo simulato di file/cartelle. Sono ora limitati ai test in attesa di una progettazione sicura con handle e identità, conservazione dei contenuti speciali e collaudo USB/SMB. La versione resta **0.10.0-dev** e M1 resta aperta.
 
 ## Spazio disponibile delle unità (nuova funzione di sviluppo)
 - Nella barra laterale **UNITÀ**, accanto a C:\\, D:\\ e agli eventuali dischi di rete mappati, appare la **quantità di spazio libero accessibile all'utente** (per esempio `C:\\ · 120.5 GB liberi`).
@@ -140,7 +139,7 @@ cargo build --locked --release
 - Import dalla clipboard **sempre in modalità COPIA**, anche se su Windows è stato usato Taglia: nessuna eliminazione accidentale delle sorgenti. Clipboard virtuale e formati diversi da CF_HDROP non sono supportati.
 - Nuovi test automatici per integrità delle copie, progresso in byte e cancellazione a metà del file.
 
-**Limitazioni:** le copie batch sono ancora non transazionali: gli elementi già completati prima dell'annullamento rimangono copiati. La velocità indicata è una media osservata, non una promessa di prestazioni. L'importazione clipboard non esporta file verso Esplora e non gestisce cut/move in modo bidirezionale. Per i trasferimenti tra dischi, lo spostamento automatico è sperimentale e richiede collaudo su volumi reali.
+**Limitazioni:** le copie batch sono ancora non transazionali: gli elementi già completati prima dell'annullamento rimangono copiati. La velocità indicata è una media osservata, non una promessa di prestazioni. L'importazione clipboard non esporta file verso Esplora e non gestisce cut/move in modo bidirezionale. Per i trasferimenti tra dischi, lo spostamento automatico è disabilitato dal gate di sicurezza 0.11.
 
 ## Funzioni aggiunte nella v0.4.0
 
@@ -223,7 +222,7 @@ Carica i file in **un repository Veldir dedicato**. In **Actions → Veldir Wind
 
 - **Non è una release stabile:** mancano il collaudo completo della GUI e test su PC diversi.
 - Nessuna copia di link/junction, nessun rollback delle operazioni già completate e nessuna garanzia di preservare timestamp, ACL o altri metadati.
-- **Spostamenti tra dischi diversi: funzionalità sperimentale**, già presente per file e cartelle con copia verificata; per **entrambi** l'originale viene inviato al Cestino soltanto dopo la pubblicazione. Richiede test reali su disco USB/rete prima di usare dati importanti. Nessuna garanzia di preservazione completa di ACL, ADS e timestamp.
+- **Spostamenti tra dischi diversi: disabilitati**; origine conservata. Helper sperimentali disponibili solo nei test.
 - Clipboard Shell limitata a CF_HDROP con intenzione di copia; nessun drag & drop da Veldir verso applicazioni esterne.
 - Le icone native e le miniature immagini sono state introdotte nella 0.7; restano assenti rendering grafico PDF, indicizzazione persistente, menu contestuale completo di Windows, file watcher, installer e firma digitale.
 

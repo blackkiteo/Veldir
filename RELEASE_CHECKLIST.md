@@ -1,6 +1,7 @@
 # Condizioni per Veldir 1.0
 
 Versione candidata attuale: **0.10.0-dev**. Non è ancora una release stabile.
+Gate trasferimenti del 1 novembre 2026: move cross-volume disabilitato dopo audit QA/Security; i prototipi sono solo test. Vedere `docs/TRANSFER_AUDIT_0_11.md`. M1 e collaudo USB/SMB rimangono aperti.
 La CI prova compilazione, codice e scenari simulati; non certifica il comportamento dell'interfaccia su un PC Windows reale.
 
 ## Verifiche automatiche eseguite

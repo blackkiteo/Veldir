@@ -4,6 +4,14 @@ Build di sviluppo. La nuova pianificazione per milestone e **85 attività** è i
 
 Veldir è un progetto **open source con licenza MIT**, indipendente e non affiliato a File Pilot. Lo stato 0.10.0-dev non è una release stabile: il collaudo reale e i criteri della [issue #13](https://github.com/blackkiteo/Veldir/issues/13) sono ancora aperti.
 
+## Squadra di agenti per lo sviluppo
+Veldir include **10 agenti collaborativi** in [`.github/agents/`](.github/agents/): coordinatore, Rust, trasferimenti sicuri, Windows, UX, ricerca/anteprime, QA, prestazioni, sicurezza e release.
+
+- [Protocollo di collaborazione e avvio](docs/AGENT_TEAM.md): come consultarsi come subagenti, passarsi richieste, condividere i risultati in issue/PR e verificare i gate.
+- [Regole comuni AGENTS.md](AGENTS.md): integrità dati, Rust/Windows, CI, collaudo e divieto di pubblicare autonomamente.
+- [Validazione automatica](.github/workflows/agents-validation.yml): controllo delle 10 definizioni, dei collegamenti reciproci e delle impostazioni di delega.
+- In un ambiente Copilot/VS Code compatibile seleziona `veldir-orchestrator` e richiedi la pianificazione di un ticket. **Avere i file nel repository non avvia agenti in background**; deleghe annidate e handoff dipendono dal provider e dalla versione dell'editor.
+
 ## Contribuire e sicurezza
 
 Prima di contribuire, consultare la [checklist della Pull Request](.github/pull_request_template.md). Vulnerabilità e credenziali vanno segnalate privatamente secondo [SECURITY.md](SECURITY.md), **mai nelle issue pubbliche**. Per la protezione del ramo principale e le impostazioni a carico del proprietario, consultare [la checklist per il repository pubblico](docs/PUBLIC_REPOSITORY_CHECKLIST.md). Le scansioni automatiche non escludono ogni rischio.

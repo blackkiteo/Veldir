@@ -1,6 +1,6 @@
 [package]
 name = "veldir"
-version = "0.9.0"
+version = "0.10.0-dev"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Veldir contributors"]
@@ -8,7 +8,7 @@ description = "A lightweight, keyboard-friendly file manager for Windows"
 license = "MIT"
 
 [dependencies]
-eframe = { version = "=0.37.0", default-features = false, features = ["default_fonts", "glow", "persistence", "clipboard"] }
+eframe = { version = "=0.37.0", default-features = false, features = ["default_fonts", "glow", "persistence", "clipboard", "accesskit"] }
 serde = { version = "1.0", features = ["derive"] }
 dirs-next = "2.0"
 trash = "5.2.9"

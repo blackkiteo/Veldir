@@ -12,43 +12,49 @@ pub struct FolderWatcher {
 impl FolderWatcher {
     /// Callback is invoked from notify's background event thread.
     pub fn start(on_change: impl Fn(PathBuf) + Send + 'static) -> Self {
-        let (commands,changes) = mpsc::channel::<Vec<PathBuf>>();
+        let (commands, changes) = mpsc::channel::<Vec<PathBuf>>();
         std::thread::spawn(move || {
-            let mut watcher=match notify::recommended_watcher(
-                move |result:notify::Result<notify::Event>| {
-                    if let Ok(event)=result {
-                        if matches!(event.kind,EventKind::Create(_)|
-                            EventKind::Modify(_)|EventKind::Remove(_)|EventKind::Any) {
+            let mut watcher =
+                match notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
+                    if let Ok(event) = result {
+                        if matches!(
+                            event.kind,
+                            EventKind::Create(_)
+                                | EventKind::Modify(_)
+                                | EventKind::Remove(_)
+                                | EventKind::Any
+                        ) {
                             for path in event.paths {
                                 on_change(path);
                             }
                         }
                     }
-                }
-            ) {
-                Ok(w)=>w,
-                Err(_)=>return,
-            };
-            let mut active=BTreeSet::<PathBuf>::new();
-            while let Ok(next)=changes.recv() {
-                let requested:BTreeSet<_>=next.into_iter().collect();
+                }) {
+                    Ok(w) => w,
+                    Err(_) => return,
+                };
+            let mut active = BTreeSet::<PathBuf>::new();
+            while let Ok(next) = changes.recv() {
+                let requested: BTreeSet<_> = next.into_iter().collect();
                 for path in active.difference(&requested) {
-                    let _=watcher.unwatch(path);
+                    let _ = watcher.unwatch(path);
                 }
-                let mut installed=BTreeSet::new();
+                let mut installed = BTreeSet::new();
                 for path in &requested {
-                    if active.contains(path) || watcher.watch(path,RecursiveMode::NonRecursive).is_ok() {
+                    if active.contains(path)
+                        || watcher.watch(path, RecursiveMode::NonRecursive).is_ok()
+                    {
                         installed.insert(path.clone());
                     }
                 }
-                active=installed;
+                active = installed;
             }
         });
-        Self {commands}
+        Self { commands }
     }
 
-    pub fn set_paths(&self,paths:Vec<PathBuf>) {
-        let _=self.commands.send(paths);
+    pub fn set_paths(&self, paths: Vec<PathBuf>) {
+        let _ = self.commands.send(paths);
     }
 }
 
@@ -57,7 +63,7 @@ mod tests {
     use super::*;
     #[test]
     fn observer_accepts_empty_watch_set() {
-        let watcher=FolderWatcher::start(|_|{});
+        let watcher = FolderWatcher::start(|_| {});
         watcher.set_paths(Vec::new());
     }
 }

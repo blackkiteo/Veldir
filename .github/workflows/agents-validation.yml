@@ -1,0 +1,36 @@
+name: Veldir Agent Team Validation
+
+on:
+  push:
+    paths:
+      - 'AGENTS.md'
+      - 'docs/AGENT_TEAM.md'
+      - '.github/agents/**'
+      - '.github/copilot-instructions.md'
+      - '.github/ISSUE_TEMPLATE/agent-task.md'
+      - '.github/workflows/agents-validation.yml'
+      - '.vscode/settings.json'
+      - 'scripts/validate_agents.py'
+  pull_request:
+    paths:
+      - 'AGENTS.md'
+      - 'docs/AGENT_TEAM.md'
+      - '.github/agents/**'
+      - '.github/copilot-instructions.md'
+      - '.github/ISSUE_TEMPLATE/agent-task.md'
+      - '.github/workflows/agents-validation.yml'
+      - '.vscode/settings.json'
+      - 'scripts/validate_agents.py'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate collaborative agent configs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate ten agent definitions and handoffs
+        run: python3 scripts/validate_agents.py

@@ -1,52 +1,67 @@
-name: Veldir Windows Build
-
+name: Veldir Windows
 on:
   push:
+    branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
-
 concurrency:
   group: veldir-windows-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   build-windows-x64:
     runs-on: windows-latest
     permissions:
       contents: read
+    env:
+      VELDIR_BUILD_COMMIT: ${{ github.sha }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.95.0'
           components: rustfmt
-      - name: Rust versions
-        shell: pwsh
-        run: |
-          rustc --version
-          cargo --version
-      - name: Format code
-        run: cargo fmt --all
-      - name: Check compilation
-        run: cargo check --all-targets
-      - name: Run tests
-        run: cargo test --all-targets
-      - name: Release build
-        run: cargo build --release
-      - name: Generate checksum
-        shell: pwsh
-        run: |
-          Get-FileHash target\release\veldir.exe -Algorithm SHA256 | ForEach-Object {
-            "$($_.Hash.ToLowerInvariant()) *veldir.exe" | Out-File -FilePath target\release\SHA256SUMS.txt -Encoding ascii
-          }
-      - name: Upload EXE and checksum
-        uses: actions/upload-artifact@v4
+      - name: Cache Rust dependencies and build output
+        uses: Swatinem/rust-cache@v2
         with:
-          name: Veldir-v0.9.0-Windows-x64
+          cache-on-failure: true
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Compile all targets
+        run: cargo check --locked --all-targets
+      - name: Run tests
+        run: cargo test --locked --all-targets
+      - name: Measure directory listing
+        run: cargo test --locked benchmark_large_listing -- --ignored --nocapture
+      - name: Build release
+        run: cargo build --locked --release
+      - name: Package metadata and checksums
+        shell: pwsh
+        run: |
+          Copy-Item README.md target/release/README.md
+          Copy-Item LICENSE target/release/LICENSE
+          Copy-Item SECURITY.md target/release/SECURITY.md
+          Copy-Item scripts/Veldir-portable.cmd target/release/Veldir-portable.cmd
+          Copy-Item ROADMAP.md target/release/ROADMAP.md
+          Copy-Item ARCHITECTURE_DECISIONS.md target/release/ARCHITECTURE_DECISIONS.md
+          Copy-Item RELEASE_CHECKLIST.md target/release/RELEASE_CHECKLIST.md
+          "Commit: $env:VELDIR_BUILD_COMMIT" | Set-Content target/release/BUILD.txt
+          Get-FileHash target/release/veldir.exe -Algorithm SHA256 | ForEach-Object {
+            "$($_.Hash.ToLowerInvariant()) *veldir.exe" | Out-File target/release/SHA256SUMS.txt -Encoding ascii
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Veldir-Windows-x64-${{ github.sha }}
           path: |
             target/release/veldir.exe
+            target/release/Veldir-portable.cmd
             target/release/SHA256SUMS.txt
+            target/release/BUILD.txt
+            target/release/README.md
+            target/release/LICENSE
+            target/release/SECURITY.md
+            target/release/ROADMAP.md
+            target/release/ARCHITECTURE_DECISIONS.md
+            target/release/RELEASE_CHECKLIST.md
           if-no-files-found: error
           retention-days: 30

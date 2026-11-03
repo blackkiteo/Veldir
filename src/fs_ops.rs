@@ -975,12 +975,20 @@ pub(crate) fn preflight_rename_many(changes: &[(PathBuf, String)]) -> Result<(),
     if changes.is_empty() {
         return Err("Nessun elemento da rinominare".into());
     }
+    let mut sources = BTreeSet::new();
     let mut targets = BTreeSet::new();
     for (source, name) in changes {
         valid_name(name)?;
-        if source.symlink_metadata().is_err() {
-            return Err(format!("Sorgente assente: {}", source.display()));
+        // A duplicate input could be renamed by the first step and fail on
+        // the second, leaving a preventable partial batch.
+        if !sources.insert(source.to_string_lossy().to_lowercase()) {
+            return Err(format!(
+                "Sorgente ripetuta nel batch: {}. Nessuna rinomina eseguita",
+                source.display()
+            ));
         }
+        fs::symlink_metadata(source)
+            .map_err(|e| format!("Impossibile verificare {}: {e}", source.display()))?;
         let parent = source.parent().ok_or("Percorso senza cartella padre")?;
         let target = parent.join(name);
         if target == *source {
@@ -989,7 +997,9 @@ pub(crate) fn preflight_rename_many(changes: &[(PathBuf, String)]) -> Result<(),
         if !targets.insert(target.to_string_lossy().to_lowercase()) {
             return Err("Due file avrebbero lo stesso nome: operazione interrotta".into());
         }
-        if target.symlink_metadata().is_ok() {
+        // Only NotFound means that a destination is free. Permission denied,
+        // malformed paths and network errors must fail closed before writes.
+        if path_exists(&target)? {
             return Err(format!("Destinazione già presente: {}", target.display()));
         }
     }
@@ -2717,6 +2727,34 @@ mod tests {
         assert_eq!(fs::read_to_string(a).unwrap(), "AAA");
         assert_eq!(fs::read_to_string(b).unwrap(), "BBB");
     }
+    #[test]
+    fn bulk_rename_duplicate_source_fails_before_any_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.txt");
+        fs::write(&source, b"ORIGINAL").unwrap();
+        let changes = vec![
+            (source.clone(), "first.txt".to_owned()),
+            (source.clone(), "second.txt".to_owned()),
+        ];
+
+        let err = execute(Job::RenameMany {
+            changes: changes.clone(),
+        })
+        .unwrap_err();
+        assert!(err.contains("Sorgente ripetuta"), "{err}");
+
+        let err = execute_progress(
+            Job::RenameMany { changes },
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(err.contains("Sorgente ripetuta"), "{err}");
+        assert_eq!(fs::read(&source).unwrap(), b"ORIGINAL");
+        assert!(!dir.path().join("first.txt").exists());
+        assert!(!dir.path().join("second.txt").exists());
+    }
+
     #[test]
     fn cancellation_keeps_prior_items_and_leaves_next_untouched() {
         let dir = tempfile::tempdir().unwrap();

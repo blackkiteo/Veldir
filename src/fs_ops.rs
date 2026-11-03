@@ -593,47 +593,26 @@ fn copy_source_checkpoint(stage: CopySourceStage, source: &Path) -> Result<(), S
     })
 }
 
-/// Each write is to a private staging path; cancellation or failure removes
-/// that staging. The root counts as one directory guard; files count as zero.
-fn copy_tree_progress_with_sync(
-    source: &Path,
-    target: &Path,
-    cancelled: &AtomicBool,
-    on_chunk: &mut impl FnMut(u64),
-    sync_file: &mut impl FnMut(&fs::File) -> io::Result<()>,
-) -> Result<(), String> {
-    copy_tree_at_depth(source, target, cancelled, on_chunk, sync_file, 0)
+/// Independently owned frames keep visited ancestor guards alive on the heap.
+/// Dropping the Vec on failure closes every iterator and guard without recursion.
+struct DirectoryCopyFrame {
+    source: PathBuf,
+    target: PathBuf,
+    depth: usize,
+    children: Option<fs::ReadDir>,
+    guard: fs::File,
+    modified: SystemTime,
 }
 
-fn copy_tree_at_depth(
+fn open_directory_copy_frame(
     source: &Path,
     target: &Path,
     cancelled: &AtomicBool,
-    on_chunk: &mut impl FnMut(u64),
-    sync_file: &mut impl FnMut(&fs::File) -> io::Result<()>,
     parent_directories: usize,
-) -> Result<(), String> {
-    if cancelled.load(Ordering::Relaxed) {
-        return Err("Copia annullata: destinazione incompleta eliminata".into());
-    }
-    let meta = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
-    if meta.file_type().is_symlink() || is_windows_reparse_point(&meta) {
-        return Err(format!(
-            "Collegamento o junction non copiato: {}",
-            source.display()
-        ));
-    }
-    if meta.is_file() {
-        return copy_regular_file_progress_with_sync(
-            source, target, cancelled, on_chunk, sync_file,
-        );
-    }
-    if !meta.is_dir() {
-        return Err("Tipo di file non supportato".into());
-    }
-    // Enforce before opening the next guard, including when the source tree
-    // gained depth after its earlier preflight.
-    let directory_depth = next_directory_depth(parent_directories)?;
+) -> Result<DirectoryCopyFrame, String> {
+    // Enforce before opening the next guard, including source trees that grew
+    // after preflight. Files never call this function and add no guard.
+    let depth = next_directory_depth(parent_directories)?;
     check_cancelled(cancelled)?;
     #[cfg(test)]
     copy_directory_checkpoint(CopyDirectoryStage::BeforeOpen, source)?;
@@ -646,52 +625,109 @@ fn copy_tree_at_depth(
     #[cfg(test)]
     copy_directory_checkpoint(CopyDirectoryStage::BeforeReadDir, source)?;
     check_cancelled(cancelled)?;
-    let mut children = fs::read_dir(source).map_err(|e| e.to_string())?;
-    loop {
-        check_cancelled(cancelled)?;
-        #[cfg(test)]
-        copy_directory_checkpoint(CopyDirectoryStage::BeforeNext, source)?;
-        check_cancelled(cancelled)?;
-        let Some(child) = children.next() else {
-            break;
-        };
-        let child = child.map_err(|e| e.to_string())?;
-        copy_tree_at_depth(
-            &child.path(),
-            &target.join(child.file_name()),
-            cancelled,
-            on_chunk,
-            sync_file,
-            directory_depth,
-        )?;
+    let children = fs::read_dir(source).map_err(|e| e.to_string())?;
+    Ok(DirectoryCopyFrame {
+        source: source.to_path_buf(),
+        target: target.to_path_buf(),
+        depth,
+        children: Some(children),
+        guard,
+        modified,
+    })
+}
+
+fn copy_source_metadata(source: &Path, cancelled: &AtomicBool) -> Result<fs::Metadata, String> {
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("Copia annullata: destinazione incompleta eliminata".into());
     }
-    drop(children);
-    check_cancelled(cancelled)?;
-    #[cfg(test)]
-    copy_directory_checkpoint(CopyDirectoryStage::BeforeFinal, source)?;
-    check_cancelled(cancelled)?;
-    let current = guard
-        .metadata()
-        .map_err(|e| format!("Controllo finale handle directory: {e}"))?;
-    let current_modified = current
-        .modified()
-        .map_err(|e| format!("Data finale handle directory non disponibile: {e}"))?;
-    if !current.is_dir()
-        || current.file_type().is_symlink()
-        || is_windows_reparse_point(&current)
-        || current_modified != modified
-    {
-        return Err(
-            "Directory sorgente cambiata dopo l'apertura protetta; copia non pubblicata".into(),
+    let meta = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
+    if meta.file_type().is_symlink() || is_windows_reparse_point(&meta) {
+        return Err(format!(
+            "Collegamento o junction non copiato: {}",
+            source.display()
+        ));
+    }
+    if !meta.is_file() && !meta.is_dir() {
+        return Err("Tipo di file non supportato".into());
+    }
+    Ok(meta)
+}
+
+/// Each write is to a private staging path; cancellation or failure removes
+/// that staging. DFS frames use heap storage, so directory depth does not grow
+/// the Rust call stack. The root counts as one guard and files count as zero.
+fn copy_tree_progress_with_sync(
+    source: &Path,
+    target: &Path,
+    cancelled: &AtomicBool,
+    on_chunk: &mut impl FnMut(u64),
+    sync_file: &mut impl FnMut(&fs::File) -> io::Result<()>,
+) -> Result<(), String> {
+    let meta = copy_source_metadata(source, cancelled)?;
+    if meta.is_file() {
+        return copy_regular_file_progress_with_sync(
+            source, target, cancelled, on_chunk, sync_file,
         );
     }
-    // Every ancestor guard remains live until all recursive children finish.
-    drop(guard);
+    let mut frames = vec![open_directory_copy_frame(source, target, cancelled, 0)?];
+    while let Some(frame) = frames.last_mut() {
+        check_cancelled(cancelled)?;
+        #[cfg(test)]
+        copy_directory_checkpoint(CopyDirectoryStage::BeforeNext, &frame.source)?;
+        check_cancelled(cancelled)?;
+        let child = frame
+            .children
+            .as_mut()
+            .ok_or("Enumeratore directory non disponibile")?
+            .next();
+        if let Some(child) = child {
+            let child = child.map_err(|e| e.to_string())?;
+            let source = child.path();
+            let target = frame.target.join(child.file_name());
+            let parent_depth = frame.depth;
+            let meta = copy_source_metadata(&source, cancelled)?;
+            if meta.is_file() {
+                copy_regular_file_progress_with_sync(
+                    &source, &target, cancelled, on_chunk, sync_file,
+                )?;
+            } else {
+                let child_frame =
+                    open_directory_copy_frame(&source, &target, cancelled, parent_depth)?;
+                frames.push(child_frame);
+            }
+        } else {
+            // Close enumeration before final checks while retaining this guard
+            // and every ancestor guard. Pop only after validation succeeds.
+            drop(frame.children.take());
+            check_cancelled(cancelled)?;
+            #[cfg(test)]
+            copy_directory_checkpoint(CopyDirectoryStage::BeforeFinal, &frame.source)?;
+            check_cancelled(cancelled)?;
+            let current = frame
+                .guard
+                .metadata()
+                .map_err(|e| format!("Controllo finale handle directory: {e}"))?;
+            let current_modified = current
+                .modified()
+                .map_err(|e| format!("Data finale handle directory non disponibile: {e}"))?;
+            if !current.is_dir()
+                || current.file_type().is_symlink()
+                || is_windows_reparse_point(&current)
+                || current_modified != frame.modified
+            {
+                return Err(
+                    "Directory sorgente cambiata dopo l'apertura protetta; copia non pubblicata"
+                        .into(),
+                );
+            }
+            frames.pop();
+        }
+    }
     Ok(())
 }
 
-/// File buffering stays off the recursive directory stack, even in debug
-/// builds on a 2 MiB Windows thread stack. Allocate the buffer directly on heap.
+/// File buffering stays on the heap; directory traversal is iterative even
+/// in debug builds on a 2 MiB Windows thread stack.
 fn copy_regular_file_progress_with_sync(
     source: &Path,
     target: &Path,
@@ -1727,6 +1763,11 @@ mod tests {
             .name("directory-depth-256".into())
             .stack_size(2 * 1024 * 1024)
             .spawn(|| {
+                fn phase(message: &[u8]) {
+                    std::io::stderr()
+                        .write_all(message)
+                        .expect("Depth-test phase marker");
+                }
                 let root = tempfile::tempdir().unwrap();
                 let source = root.path().join("s");
                 let destination = root.path().join("out");
@@ -1745,6 +1786,7 @@ mod tests {
                 let maximum = std::rc::Rc::new(std::cell::Cell::new(0usize));
                 let observed_active = active.clone();
                 let observed_max = maximum.clone();
+                phase(b"VELDIR depth256: before copy\n");
                 with_directory_copy_test_settings(
                     MAX_DIRECTORY_GUARDS,
                     move |stage, _| {
@@ -1765,6 +1807,7 @@ mod tests {
                     },
                 )
                 .unwrap();
+                phase(b"VELDIR depth256: after copy\n");
                 assert_eq!(maximum.get(), 256);
                 assert_eq!(active.get(), 0);
                 let copied = destination
@@ -1773,17 +1816,23 @@ mod tests {
                     .join("file.bin");
                 assert_eq!(fs::read(copied).unwrap(), bytes);
                 assert_eq!(fs::read(deepest.join("file.bin")).unwrap(), bytes);
+                phase(b"VELDIR depth256: after verification\n");
                 fs::create_dir(deepest.join("too-deep")).unwrap();
                 let first = root.path().join("first.txt");
                 fs::write(&first, b"FIRST MUST NOT BE PUBLISHED").unwrap();
+                phase(b"VELDIR depth256: before depth257 preflight\n");
                 let error = execute(Job::CopyMany {
                     sources: vec![first.clone(), source],
                     destination_folder: rejected_destination.clone(),
                 })
                 .unwrap_err();
+                phase(b"VELDIR depth256: after depth257 preflight\n");
                 assert!(error.contains("massimo 256 directory"), "{error}");
                 assert_eq!(fs::read_dir(rejected_destination).unwrap().count(), 0);
                 assert_eq!(fs::read(first).unwrap(), b"FIRST MUST NOT BE PUBLISHED");
+                phase(b"VELDIR depth256: before fixture cleanup\n");
+                drop(root);
+                phase(b"VELDIR depth256: after fixture cleanup\n");
             })
             .unwrap()
             .join()

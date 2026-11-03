@@ -2743,12 +2743,8 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("Sorgente ripetuta"), "{err}");
 
-        let err = execute_progress(
-            Job::RenameMany { changes },
-            &AtomicBool::new(false),
-            |_| {},
-        )
-        .unwrap_err();
+        let err = execute_progress(Job::RenameMany { changes }, &AtomicBool::new(false), |_| {})
+            .unwrap_err();
         assert!(err.contains("Sorgente ripetuta"), "{err}");
         assert_eq!(fs::read(&source).unwrap(), b"ORIGINAL");
         assert!(!dir.path().join("first.txt").exists());

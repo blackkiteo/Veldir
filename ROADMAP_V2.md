@@ -61,6 +61,8 @@ Destinazione primaria: Windows 11 x64; compatibilità Windows 10 x64 da collauda
 
 ### M1 — 0.11: motore trasferimenti affidabile (P0)
 
+**Guard directory Windows e profondità:** handle validati prima dell'output/enumerazione e mantenuti durante la copia dei discendenti; limite condiviso di 256 directory contemporanee verificato anche nel preflight. Buffer file sullo heap per evitare frame ricorsivi da 256 KiB. [Contratto e verifiche](docs/DIRECTORY_HANDLES_0_11.md). Antenati esterni, traversal per percorso e gate M1 restano aperti; cross-volume disabilitato.
+
 **Apertura sorgenti regolari Windows:** metadata e lettura sullo stesso handle, apertura senza seguire il reparse point finale e sharing conservativo durante lettura/sync. Il punto di cattura è l'apertura: identità rispetto al preflight e race delle directory antenate restano aperte. [Contratto e verifiche](docs/SOURCE_HANDLES_0_11.md); cross-volume resta disabilitato e M1 non è chiusa.
 
 **Consolidamento entrypoint copie:** anche `execute(Copy/CopyMany)` delega il batch al motore comune con preflight globale; eliminato il percorso diretto escluso nella #19. L'API sincrona non espone annullamento esterno. [Contratto e verifiche](docs/COPY_ENTRYPOINTS_0_11.md); nessuna chiusura dei gate M1.

@@ -204,7 +204,7 @@ impl ScanBudget {
         path.as_os_str()
             .len()
             .checked_mul(2)
-            .and_then(|n| n.checked_add(std::mem::size_of::<PathBuf>()))
+            .and_then(|n| n.checked_add(std::mem::size_of::<(PathBuf, usize, usize)>()))
             .ok_or_else(|| "Percorso troppo grande per il preflight".into())
     }
     fn enqueue(&mut self, path: &Path) -> Result<usize, String> {
@@ -304,10 +304,10 @@ fn scan_tree(
 ) -> Result<u64, String> {
     check_cancelled(cancelled)?;
     let bytes = budget.enqueue(source)?;
-    let mut stack = vec![(source.to_path_buf(), bytes)];
+    let mut stack = vec![(source.to_path_buf(), bytes, 0usize)];
     let mut total = 0u64;
     let result = (|| {
-        while let Some((path, bytes)) = stack.pop() {
+        while let Some((path, bytes, parent_directories)) = stack.pop() {
             budget.pending_bytes -= bytes;
             check_cancelled(cancelled)?;
             before_io(ScanOperation::Metadata, &path)?;
@@ -321,6 +321,7 @@ fn scan_tree(
                 ));
             }
             if meta.is_dir() {
+                let directory_depth = next_directory_depth(parent_directories)?;
                 check_cancelled(cancelled)?;
                 before_io(ScanOperation::ReadDir, &path)?;
                 check_cancelled(cancelled)?;
@@ -337,7 +338,7 @@ fn scan_tree(
                         .map_err(|e| format!("Preflight {}: {e}", path.display()))?
                         .path();
                     let bytes = budget.enqueue(&child)?;
-                    stack.push((child, bytes));
+                    stack.push((child, bytes, directory_depth));
                 }
             } else if meta.is_file() {
                 total = total
@@ -350,7 +351,7 @@ fn scan_tree(
         Ok(total)
     })();
     // On failure queued paths are dropped together with their memory charge.
-    for (_, bytes) in stack {
+    for (_, bytes, _) in stack {
         budget.pending_bytes -= bytes;
     }
     result
@@ -401,10 +402,126 @@ pub(crate) fn tree_size(source: &Path) -> Result<u64, String> {
     )
 }
 
+/// Counts simultaneously held source-directory guards. Files add no guard.
+const MAX_DIRECTORY_GUARDS: usize = 256;
+
+fn directory_depth_limit() -> usize {
+    #[cfg(test)]
+    if let Some(limit) = DIRECTORY_COPY_TEST_SETTINGS.with(|settings| {
+        settings
+            .borrow()
+            .as_ref()
+            .map(|settings| settings.max_depth)
+    }) {
+        return limit;
+    }
+    MAX_DIRECTORY_GUARDS
+}
+
+fn next_directory_depth(parent_directories: usize) -> Result<usize, String> {
+    let depth = parent_directories
+        .checked_add(1)
+        .ok_or("Profondità directory troppo grande")?;
+    let limit = directory_depth_limit();
+    if depth > limit {
+        return Err(format!(
+            "Profondità directory non supportata: massimo {limit} directory contemporanee"
+        ));
+    }
+    Ok(depth)
+}
+
+/// Pin a directory while its descendants are copied. This protects the visited
+/// directory on Windows, not unvisited ancestors or a universal handle-relative
+/// traversal: read_dir and child opens still resolve paths.
+fn open_copy_directory(source: &Path) -> Result<(fs::File, SystemTime), String> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        };
+        options
+            .share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .security_qos_flags(0);
+    }
+    let guard = options
+        .open(source)
+        .map_err(|e| format!("Apertura directory protetta {}: {e}", source.display()))?;
+    let snapshot = guard
+        .metadata()
+        .map_err(|e| format!("Metadata handle directory: {e}"))?;
+    if !snapshot.is_dir()
+        || snapshot.file_type().is_symlink()
+        || is_windows_reparse_point(&snapshot)
+    {
+        return Err(format!(
+            "Handle sorgente non è una directory senza reparse point: {}",
+            source.display()
+        ));
+    }
+    let modified = snapshot
+        .modified()
+        .map_err(|e| format!("Data modifica handle directory non disponibile: {e}"))?;
+    Ok((guard, modified))
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CopyDirectoryStage {
+    BeforeOpen,
+    Validated,
+    BeforeReadDir,
+    BeforeNext,
+    BeforeFinal,
+}
+#[cfg(test)]
+struct DirectoryCopyTestSettings {
+    max_depth: usize,
+    hook: Box<dyn FnMut(CopyDirectoryStage, &Path) -> Result<(), String>>,
+}
+#[cfg(test)]
+thread_local! {
+    static DIRECTORY_COPY_TEST_SETTINGS: std::cell::RefCell<Option<DirectoryCopyTestSettings>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+fn with_directory_copy_test_settings<T>(
+    max_depth: usize,
+    hook: impl FnMut(CopyDirectoryStage, &Path) -> Result<(), String> + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Restore(Option<DirectoryCopyTestSettings>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            DIRECTORY_COPY_TEST_SETTINGS.with(|settings| {
+                settings.replace(self.0.take());
+            });
+        }
+    }
+    let previous = DIRECTORY_COPY_TEST_SETTINGS.with(|settings| {
+        settings.replace(Some(DirectoryCopyTestSettings {
+            max_depth,
+            hook: Box::new(hook),
+        }))
+    });
+    let _restore = Restore(previous);
+    action()
+}
+#[cfg(test)]
+fn copy_directory_checkpoint(stage: CopyDirectoryStage, source: &Path) -> Result<(), String> {
+    DIRECTORY_COPY_TEST_SETTINGS.with(|settings| match settings.borrow_mut().as_mut() {
+        Some(settings) => (settings.hook)(stage, source),
+        None => Ok(()),
+    })
+}
+
 /// The capture point is this open, not the earlier path-based preflight.
 /// Windows refuses data writers and delete/rename sharing while this handle
 /// lives and opens the leaf reparse point itself rather than following it.
-/// Parent-directory races and pre-open replacement by another regular file
+/// Unvisited ancestors and pre-open replacement by another regular file
 /// are outside this guarantee. Other platforms do not provide this sharing lock.
 fn open_copy_source(source: &Path) -> Result<(fs::File, fs::Metadata, SystemTime), String> {
     let mut options = fs::OpenOptions::new();
@@ -476,15 +593,50 @@ fn copy_source_checkpoint(stage: CopySourceStage, source: &Path) -> Result<(), S
     })
 }
 
-/// Each write is to a private staging path; a cancellation cleans that staging
-/// directory instead of publishing a partial destination.
-fn copy_tree_progress_with_sync(
+/// Independently owned frames keep visited ancestor guards alive on the heap.
+/// Dropping the Vec on failure closes every iterator and guard without recursion.
+struct DirectoryCopyFrame {
+    source: PathBuf,
+    target: PathBuf,
+    depth: usize,
+    children: Option<fs::ReadDir>,
+    guard: fs::File,
+    modified: SystemTime,
+}
+
+fn open_directory_copy_frame(
     source: &Path,
     target: &Path,
     cancelled: &AtomicBool,
-    on_chunk: &mut impl FnMut(u64),
-    sync_file: &mut impl FnMut(&fs::File) -> io::Result<()>,
-) -> Result<(), String> {
+    parent_directories: usize,
+) -> Result<DirectoryCopyFrame, String> {
+    // Enforce before opening the next guard, including source trees that grew
+    // after preflight. Files never call this function and add no guard.
+    let depth = next_directory_depth(parent_directories)?;
+    check_cancelled(cancelled)?;
+    #[cfg(test)]
+    copy_directory_checkpoint(CopyDirectoryStage::BeforeOpen, source)?;
+    check_cancelled(cancelled)?;
+    let (guard, modified) = open_copy_directory(source)?;
+    #[cfg(test)]
+    copy_directory_checkpoint(CopyDirectoryStage::Validated, source)?;
+    check_cancelled(cancelled)?;
+    fs::create_dir(target).map_err(|e| e.to_string())?;
+    #[cfg(test)]
+    copy_directory_checkpoint(CopyDirectoryStage::BeforeReadDir, source)?;
+    check_cancelled(cancelled)?;
+    let children = fs::read_dir(source).map_err(|e| e.to_string())?;
+    Ok(DirectoryCopyFrame {
+        source: source.to_path_buf(),
+        target: target.to_path_buf(),
+        depth,
+        children: Some(children),
+        guard,
+        modified,
+    })
+}
+
+fn copy_source_metadata(source: &Path, cancelled: &AtomicBool) -> Result<fs::Metadata, String> {
     if cancelled.load(Ordering::Relaxed) {
         return Err("Copia annullata: destinazione incompleta eliminata".into());
     }
@@ -495,80 +647,146 @@ fn copy_tree_progress_with_sync(
             source.display()
         ));
     }
-    if meta.is_dir() {
-        fs::create_dir(target).map_err(|e| e.to_string())?;
-        check_cancelled(cancelled)?;
-        let mut children = fs::read_dir(source).map_err(|e| e.to_string())?;
-        loop {
-            check_cancelled(cancelled)?;
-            let Some(child) = children.next() else {
-                break;
-            };
-            let child = child.map_err(|e| e.to_string())?;
-            copy_tree_progress_with_sync(
-                &child.path(),
-                &target.join(child.file_name()),
-                cancelled,
-                on_chunk,
-                sync_file,
-            )?;
-        }
-    } else if meta.is_file() {
-        check_cancelled(cancelled)?;
-        #[cfg(test)]
-        copy_source_checkpoint(CopySourceStage::BeforeOpen, source)?;
-        check_cancelled(cancelled)?;
-        let (mut input, snapshot, modified) = open_copy_source(source)?;
-        #[cfg(test)]
-        copy_source_checkpoint(CopySourceStage::Validated, source)?;
-        check_cancelled(cancelled)?;
-        let mut output = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(target)
-            .map_err(|e| e.to_string())?;
-        let mut buffer = [0u8; 256 * 1024];
-        let mut copied_bytes = 0u64;
-        loop {
-            if cancelled.load(Ordering::Relaxed) {
-                return Err("Copia annullata: destinazione incompleta eliminata".into());
-            }
-            let n = input.read(&mut buffer).map_err(|e| e.to_string())?;
-            if n == 0 {
-                break;
-            }
-            copied_bytes = copied_bytes
-                .checked_add(n as u64)
-                .ok_or("Conteggio byte copiati troppo grande")?;
-            output.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
-            on_chunk(n as u64);
-        }
-        output.flush().map_err(|e| e.to_string())?;
-        // Request durable storage before publication. A successful read-back
-        // alone can come from the filesystem cache on USB or SMB.
-        sync_file(&output).map_err(|e| format!("Sincronizzazione copia non riuscita: {e}"))?;
-        check_cancelled(cancelled)?;
-        let current = input
-            .metadata()
-            .map_err(|e| format!("Controllo finale handle sorgente: {e}"))?;
-        let current_modified = current
-            .modified()
-            .map_err(|e| format!("Data finale handle sorgente non disponibile: {e}"))?;
-        if !current.is_file()
-            || current.file_type().is_symlink()
-            || is_windows_reparse_point(&current)
-            || copied_bytes != snapshot.len()
-            || current.len() != snapshot.len()
-            || current_modified != modified
-        {
-            return Err("Sorgente cambiata dopo l'apertura protetta; copia non pubblicata".into());
-        }
-        // Explicitly retain the protected handle through output sync and final
-        // checks; publication happens later and does not delete the source.
-        drop(input);
-    } else {
+    if !meta.is_file() && !meta.is_dir() {
         return Err("Tipo di file non supportato".into());
     }
+    Ok(meta)
+}
+
+/// Each write is to a private staging path; cancellation or failure removes
+/// that staging. DFS frames use heap storage, so directory depth does not grow
+/// the Rust call stack. The root counts as one guard and files count as zero.
+fn copy_tree_progress_with_sync(
+    source: &Path,
+    target: &Path,
+    cancelled: &AtomicBool,
+    on_chunk: &mut impl FnMut(u64),
+    sync_file: &mut impl FnMut(&fs::File) -> io::Result<()>,
+) -> Result<(), String> {
+    let meta = copy_source_metadata(source, cancelled)?;
+    if meta.is_file() {
+        return copy_regular_file_progress_with_sync(
+            source, target, cancelled, on_chunk, sync_file,
+        );
+    }
+    let mut frames = vec![open_directory_copy_frame(source, target, cancelled, 0)?];
+    while let Some(frame) = frames.last_mut() {
+        check_cancelled(cancelled)?;
+        #[cfg(test)]
+        copy_directory_checkpoint(CopyDirectoryStage::BeforeNext, &frame.source)?;
+        check_cancelled(cancelled)?;
+        let child = frame
+            .children
+            .as_mut()
+            .ok_or("Enumeratore directory non disponibile")?
+            .next();
+        if let Some(child) = child {
+            let child = child.map_err(|e| e.to_string())?;
+            let source = child.path();
+            let target = frame.target.join(child.file_name());
+            let parent_depth = frame.depth;
+            let meta = copy_source_metadata(&source, cancelled)?;
+            if meta.is_file() {
+                copy_regular_file_progress_with_sync(
+                    &source, &target, cancelled, on_chunk, sync_file,
+                )?;
+            } else {
+                let child_frame =
+                    open_directory_copy_frame(&source, &target, cancelled, parent_depth)?;
+                frames.push(child_frame);
+            }
+        } else {
+            // Close enumeration before final checks while retaining this guard
+            // and every ancestor guard. Pop only after validation succeeds.
+            drop(frame.children.take());
+            check_cancelled(cancelled)?;
+            #[cfg(test)]
+            copy_directory_checkpoint(CopyDirectoryStage::BeforeFinal, &frame.source)?;
+            check_cancelled(cancelled)?;
+            let current = frame
+                .guard
+                .metadata()
+                .map_err(|e| format!("Controllo finale handle directory: {e}"))?;
+            let current_modified = current
+                .modified()
+                .map_err(|e| format!("Data finale handle directory non disponibile: {e}"))?;
+            if !current.is_dir()
+                || current.file_type().is_symlink()
+                || is_windows_reparse_point(&current)
+                || current_modified != frame.modified
+            {
+                return Err(
+                    "Directory sorgente cambiata dopo l'apertura protetta; copia non pubblicata"
+                        .into(),
+                );
+            }
+            frames.pop();
+        }
+    }
+    Ok(())
+}
+
+/// File buffering stays on the heap; directory traversal is iterative even
+/// in debug builds on a 2 MiB Windows thread stack.
+fn copy_regular_file_progress_with_sync(
+    source: &Path,
+    target: &Path,
+    cancelled: &AtomicBool,
+    on_chunk: &mut impl FnMut(u64),
+    sync_file: &mut impl FnMut(&fs::File) -> io::Result<()>,
+) -> Result<(), String> {
+    check_cancelled(cancelled)?;
+    #[cfg(test)]
+    copy_source_checkpoint(CopySourceStage::BeforeOpen, source)?;
+    check_cancelled(cancelled)?;
+    let (mut input, snapshot, modified) = open_copy_source(source)?;
+    #[cfg(test)]
+    copy_source_checkpoint(CopySourceStage::Validated, source)?;
+    check_cancelled(cancelled)?;
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)
+        .map_err(|e| e.to_string())?;
+    let mut buffer = vec![0u8; 256 * 1024];
+    let mut copied_bytes = 0u64;
+    loop {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("Copia annullata: destinazione incompleta eliminata".into());
+        }
+        let n = input.read(&mut buffer).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        copied_bytes = copied_bytes
+            .checked_add(n as u64)
+            .ok_or("Conteggio byte copiati troppo grande")?;
+        output.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
+        on_chunk(n as u64);
+    }
+    output.flush().map_err(|e| e.to_string())?;
+    // Request durable storage before publication. A successful read-back
+    // alone can come from the filesystem cache on USB or SMB.
+    sync_file(&output).map_err(|e| format!("Sincronizzazione copia non riuscita: {e}"))?;
+    check_cancelled(cancelled)?;
+    let current = input
+        .metadata()
+        .map_err(|e| format!("Controllo finale handle sorgente: {e}"))?;
+    let current_modified = current
+        .modified()
+        .map_err(|e| format!("Data finale handle sorgente non disponibile: {e}"))?;
+    if !current.is_file()
+        || current.file_type().is_symlink()
+        || is_windows_reparse_point(&current)
+        || copied_bytes != snapshot.len()
+        || current.len() != snapshot.len()
+        || current_modified != modified
+    {
+        return Err("Sorgente cambiata dopo l'apertura protetta; copia non pubblicata".into());
+    }
+    // Explicitly retain the protected handle through output sync and final
+    // checks; publication happens later and does not delete the source.
+    drop(input);
     Ok(())
 }
 
@@ -1045,6 +1263,581 @@ pub fn execute(job: Job) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    fn assert_directory_guard_allows_reader_and_denies_rename_delete(source: &Path) {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE,
+        };
+        let reader = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(source)
+            .expect("A compatible directory reader must be allowed");
+        assert!(reader.metadata().unwrap().is_dir());
+        drop(reader);
+        // A nonempty remove_dir failure would not demonstrate protection.
+        // Request DELETE access without setting a deletion disposition instead.
+        let denied = fs::OpenOptions::new()
+            .access_mode(DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(source)
+            .unwrap_err();
+        assert_eq!(
+            denied.raw_os_error(),
+            Some(32),
+            "Expected directory DELETE sharing violation: {denied}"
+        );
+        let renamed = source.with_extension("denied-directory-rename");
+        assert!(!renamed.exists());
+        assert!(
+            fs::rename(source, &renamed).is_err(),
+            "Directory rename must be denied while guarded"
+        );
+        assert!(source.is_dir());
+        assert!(!renamed.exists());
+    }
+
+    #[cfg(windows)]
+    fn assert_directory_guard_released(source: &Path) {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE,
+        };
+        let deletion_access = fs::OpenOptions::new()
+            .access_mode(DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(source)
+            .expect("Directory DELETE access must be released after copying ends");
+        drop(deletion_access);
+        let renamed = source.with_extension("released-directory-rename");
+        assert!(!renamed.exists());
+        fs::rename(source, &renamed).expect("Directory rename must succeed after guard release");
+        fs::rename(&renamed, source).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_directory_file_replacement_is_rejected_before_output_creation() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let saved = root.path().join("saved-original");
+        let destination = root.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&destination).unwrap();
+        fs::write(source.join("child.txt"), b"KEEP CHILD").unwrap();
+        let archived = saved.clone();
+        let validated = std::rc::Rc::new(std::cell::Cell::new(false));
+        let hit = validated.clone();
+        let result = with_directory_copy_test_settings(
+            MAX_DIRECTORY_GUARDS,
+            move |stage, path| {
+                if stage == CopyDirectoryStage::BeforeOpen {
+                    fs::rename(path, &archived).unwrap();
+                    fs::write(path, b"KEEP REPLACEMENT").unwrap();
+                } else if stage == CopyDirectoryStage::Validated {
+                    hit.set(true);
+                }
+                Ok(())
+            },
+            || copy_one_progress(&source, &destination, &AtomicBool::new(false), &mut |_| {}),
+        );
+        let error = result.unwrap_err();
+        assert!(error.contains("non è una directory"), "{error}");
+        assert!(!validated.get());
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
+        assert_eq!(fs::read(&source).unwrap(), b"KEEP REPLACEMENT");
+        assert_eq!(fs::read(saved.join("child.txt")).unwrap(), b"KEEP CHILD");
+        assert_source_handle_released(&source);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_directory_symlink_replacement_is_rejected_without_following_target() {
+        use std::os::windows::fs::symlink_dir;
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let saved = root.path().join("saved-original");
+        let linked = root.path().join("link-target");
+        let destination = root.path().join("destination");
+        for directory in [&source, &linked, &destination] {
+            fs::create_dir(directory).unwrap();
+        }
+        fs::write(source.join("original.txt"), b"KEEP ORIGINAL").unwrap();
+        fs::write(linked.join("target.txt"), b"KEEP LINK TARGET").unwrap();
+        let archived = saved.clone();
+        let reference = linked.clone();
+        let error = with_directory_copy_test_settings(MAX_DIRECTORY_GUARDS, move |stage, path| {
+            if stage == CopyDirectoryStage::BeforeOpen {
+                fs::rename(path, &archived).unwrap();
+                symlink_dir(&reference, path).expect("Directory symlink creation requires Windows CreateSymbolicLink privilege or Developer Mode; no automatic skip");
+            } else if stage == CopyDirectoryStage::Validated { panic!("A directory reparse point must not become a validated guard"); }
+            Ok(())
+        }, || copy_one_progress(&source, &destination, &AtomicBool::new(false), &mut |_| {})).unwrap_err();
+        assert!(
+            error.contains("non è una directory senza reparse point"),
+            "{error}"
+        );
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
+        assert_eq!(
+            fs::read(saved.join("original.txt")).unwrap(),
+            b"KEEP ORIGINAL"
+        );
+        assert_eq!(
+            fs::read(linked.join("target.txt")).unwrap(),
+            b"KEEP LINK TARGET"
+        );
+        assert!(
+            fs::symlink_metadata(source)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_ancestor_directory_guards_live_through_child_chunks_sync_and_final_checks() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let nested = source.join("nested");
+        let destination = root.path().join("destination");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir(&destination).unwrap();
+        let bytes = vec![0x5a; 800_000];
+        fs::write(nested.join("child.bin"), &bytes).unwrap();
+        let guard_paths = vec![source.clone(), nested.clone()];
+        let finals = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let recorded = finals.clone();
+        let mut chunks = 0;
+        let mut syncs = 0;
+        with_directory_copy_test_settings(
+            2,
+            move |stage, path| {
+                if stage == CopyDirectoryStage::Validated
+                    || stage == CopyDirectoryStage::BeforeFinal
+                {
+                    assert_directory_guard_allows_reader_and_denies_rename_delete(path);
+                }
+                if stage == CopyDirectoryStage::BeforeFinal {
+                    recorded.borrow_mut().push(path.to_path_buf());
+                }
+                Ok(())
+            },
+            || {
+                copy_one_progress_with_sync(
+                    &source,
+                    &destination,
+                    &AtomicBool::new(false),
+                    &mut |_| {
+                        chunks += 1;
+                        for directory in &guard_paths {
+                            assert_directory_guard_allows_reader_and_denies_rename_delete(
+                                directory,
+                            );
+                        }
+                    },
+                    &mut |staged| {
+                        syncs += 1;
+                        for directory in &guard_paths {
+                            assert_directory_guard_allows_reader_and_denies_rename_delete(
+                                directory,
+                            );
+                        }
+                        staged.sync_all()
+                    },
+                )
+            },
+        )
+        .unwrap();
+        assert!(chunks >= 2);
+        assert_eq!(syncs, 1);
+        assert_eq!(*finals.borrow(), vec![nested.clone(), source.clone()]);
+        assert_eq!(fs::read(nested.join("child.bin")).unwrap(), bytes);
+        assert_eq!(
+            fs::read(destination.join("source").join("nested").join("child.bin")).unwrap(),
+            bytes
+        );
+        assert_directory_guard_released(&source);
+        assert_directory_guard_released(&nested);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_directory_guards_release_and_staging_cleans_on_error_cancel_enum_and_sync_failure() {
+        for scenario in 0..6 {
+            let root = tempfile::tempdir().unwrap();
+            let source = root.path().join("source");
+            let nested = source.join("nested");
+            let destination = root.path().join("destination");
+            fs::create_dir_all(&nested).unwrap();
+            fs::create_dir(&destination).unwrap();
+            let bytes = vec![0x33; 600_000];
+            fs::write(nested.join("child.bin"), &bytes).unwrap();
+            let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+            let injected_cancel = cancelled.clone();
+            let nested_path = nested.clone();
+            let injected = std::rc::Rc::new(std::cell::Cell::new(false));
+            let hit = injected.clone();
+            let result = with_directory_copy_test_settings(
+                2,
+                move |stage, path| {
+                    if path == nested_path {
+                        if stage != CopyDirectoryStage::BeforeOpen {
+                            assert_directory_guard_allows_reader_and_denies_rename_delete(path);
+                        }
+                        if scenario == 0 && stage == CopyDirectoryStage::Validated {
+                            hit.set(true);
+                            return Err("injected guarded-directory error".into());
+                        }
+                        if scenario == 2 && stage == CopyDirectoryStage::BeforeNext {
+                            hit.set(true);
+                            return Err("injected directory enumeration error".into());
+                        }
+                        if scenario == 4 && stage == CopyDirectoryStage::Validated {
+                            hit.set(true);
+                            injected_cancel.store(true, Ordering::Relaxed);
+                        }
+                        if scenario == 5 && stage == CopyDirectoryStage::BeforeFinal {
+                            hit.set(true);
+                            return Err("injected directory final-check error".into());
+                        }
+                    }
+                    Ok(())
+                },
+                || {
+                    copy_one_progress_with_sync(
+                        &source,
+                        &destination,
+                        &cancelled,
+                        &mut |_| {
+                            assert_directory_guard_allows_reader_and_denies_rename_delete(&source);
+                            assert_directory_guard_allows_reader_and_denies_rename_delete(&nested);
+                            if scenario == 1 {
+                                cancelled.store(true, Ordering::Relaxed);
+                            }
+                        },
+                        &mut |staged| {
+                            assert_directory_guard_allows_reader_and_denies_rename_delete(&source);
+                            assert_directory_guard_allows_reader_and_denies_rename_delete(&nested);
+                            if scenario == 3 {
+                                Err(io::Error::from(io::ErrorKind::StorageFull))
+                            } else {
+                                staged.sync_all()
+                            }
+                        },
+                    )
+                },
+            );
+            assert!(result.is_err(), "scenario {scenario}");
+            if [0, 2, 4, 5].contains(&scenario) {
+                assert!(injected.get());
+            }
+            assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
+            assert_eq!(fs::read(nested.join("child.bin")).unwrap(), bytes);
+            assert_directory_guard_released(&source);
+            assert_directory_guard_released(&nested);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_directory_final_handle_timestamp_change_prevents_publication() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            FILE_WRITE_ATTRIBUTES,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&destination).unwrap();
+        let changed = fs::metadata(&source).unwrap().modified().unwrap() + Duration::from_secs(120);
+        let error = with_directory_copy_test_settings(
+            1,
+            move |stage, path| {
+                if stage == CopyDirectoryStage::BeforeFinal {
+                    assert_directory_guard_allows_reader_and_denies_rename_delete(path);
+                    let attributes = fs::OpenOptions::new()
+                        .access_mode(FILE_WRITE_ATTRIBUTES)
+                        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+                        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+                        .open(path)
+                        .unwrap();
+                    attributes
+                        .set_times(fs::FileTimes::new().set_modified(changed))
+                        .unwrap();
+                    drop(attributes);
+                }
+                Ok(())
+            },
+            || copy_one_progress(&source, &destination, &AtomicBool::new(false), &mut |_| {}),
+        )
+        .unwrap_err();
+        assert!(error.contains("Directory sorgente cambiata"), "{error}");
+        assert_eq!(fs::metadata(&source).unwrap().modified().unwrap(), changed);
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
+        assert_directory_guard_released(&source);
+    }
+
+    #[test]
+    fn directory_depth_limit_is_shared_by_preflight_and_copier_and_files_add_no_guard() {
+        for limit in [1, 2] {
+            let root = tempfile::tempdir().unwrap();
+            let first = root.path().join("first.txt");
+            let source = root.path().join("source");
+            let nested = source.join("nested");
+            let destination = root.path().join("destination");
+            fs::create_dir_all(&nested).unwrap();
+            fs::create_dir(&destination).unwrap();
+            fs::write(&first, b"FIRST").unwrap();
+            fs::write(nested.join("child.txt"), b"CHILD").unwrap();
+            let opens = std::rc::Rc::new(std::cell::Cell::new(0));
+            let recorded = opens.clone();
+            let result = with_directory_copy_test_settings(
+                limit,
+                move |stage, _| {
+                    if stage == CopyDirectoryStage::BeforeOpen {
+                        recorded.set(recorded.get() + 1);
+                    }
+                    Ok(())
+                },
+                || {
+                    execute(Job::CopyMany {
+                        sources: vec![first.clone(), source.clone()],
+                        destination_folder: destination.clone(),
+                    })
+                },
+            );
+            if limit == 1 {
+                assert!(result.unwrap_err().contains("massimo 1 directory"));
+                assert_eq!(
+                    opens.get(),
+                    0,
+                    "Entire batch must fail preflight before opening copy guards"
+                );
+                assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+                let error = with_directory_copy_test_settings(
+                    1,
+                    |_, _| Ok(()),
+                    || {
+                        copy_one_progress(
+                            &source,
+                            &destination,
+                            &AtomicBool::new(false),
+                            &mut |_| {},
+                        )
+                    },
+                )
+                .unwrap_err();
+                assert!(error.contains("massimo 1 directory"));
+                assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+            } else {
+                result.unwrap();
+                assert_eq!(opens.get(), 2);
+                assert_eq!(fs::read(destination.join("first.txt")).unwrap(), b"FIRST");
+                assert_eq!(
+                    fs::read(destination.join("source").join("nested").join("child.txt")).unwrap(),
+                    b"CHILD"
+                );
+            }
+            assert_eq!(fs::read(first).unwrap(), b"FIRST");
+            assert_eq!(fs::read(nested.join("child.txt")).unwrap(), b"CHILD");
+        }
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("file.txt");
+        let destination = root.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        fs::write(&source, b"FILE ADDS NO DIRECTORY GUARD").unwrap();
+        with_directory_copy_test_settings(
+            0,
+            |_, _| panic!("A file must not open a directory guard"),
+            || {
+                execute(Job::Copy {
+                    source: source.clone(),
+                    destination_folder: destination.clone(),
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(destination.join("file.txt")).unwrap(),
+            b"FILE ADDS NO DIRECTORY GUARD"
+        );
+    }
+
+    #[test]
+    fn copier_rechecks_depth_for_directories_added_after_preflight() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let nested = source.join("nested");
+        let leaf = nested.join("child.txt");
+        let later = nested.join("later");
+        let destination = root.path().join("destination");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir(&destination).unwrap();
+        fs::write(&leaf, b"KEEP").unwrap();
+        let trigger = leaf.clone();
+        let new_directory = later.clone();
+        let changed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let injected = changed.clone();
+        let guarded = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let recorded = guarded.clone();
+        let result = with_directory_copy_test_settings(
+            2,
+            move |stage, path| {
+                if stage == CopyDirectoryStage::BeforeOpen {
+                    recorded.borrow_mut().push(path.to_path_buf());
+                }
+                Ok(())
+            },
+            || {
+                with_scan_test_settings(
+                    100,
+                    1024 * 1024,
+                    move |operation, path| {
+                        if operation == ScanOperation::Metadata
+                            && path == trigger
+                            && !injected.replace(true)
+                        {
+                            fs::create_dir(&new_directory).unwrap();
+                        }
+                        Ok(())
+                    },
+                    || {
+                        execute(Job::Copy {
+                            source: source.clone(),
+                            destination_folder: destination.clone(),
+                        })
+                    },
+                )
+            },
+        );
+        assert!(changed.get());
+        assert!(result.unwrap_err().contains("massimo 2 directory"));
+        assert_eq!(*guarded.borrow(), vec![source.clone(), nested.clone()]);
+        assert!(later.is_dir());
+        assert_eq!(fs::read(leaf).unwrap(), b"KEEP");
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn directory_copy_preserves_unicode_empty_directories_and_empty_files() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("sorgente résumé 漢字");
+        let nested = source.join("vuota résumé 漢字");
+        let destination = root.path().join("destination");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir(&destination).unwrap();
+        fs::write(source.join("vuoto.txt"), b"").unwrap();
+        fs::write(source.join("contenuto.txt"), b"CONTENTS").unwrap();
+        with_directory_copy_test_settings(
+            2,
+            |_, _| Ok(()),
+            || {
+                execute(Job::Copy {
+                    source: source.clone(),
+                    destination_folder: destination.clone(),
+                })
+            },
+        )
+        .unwrap();
+        let copied = destination.join(source.file_name().unwrap());
+        assert!(copied.join(nested.file_name().unwrap()).is_dir());
+        assert_eq!(fs::read(copied.join("vuoto.txt")).unwrap(), b"");
+        assert_eq!(fs::read(copied.join("contenuto.txt")).unwrap(), b"CONTENTS");
+        assert_eq!(fs::read(source.join("contenuto.txt")).unwrap(), b"CONTENTS");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_real_256_directory_copy_fits_two_mib_stack_and_257_fails_before_batch_writes() {
+        std::thread::Builder::new()
+            .name("directory-depth-256".into())
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                fn phase(message: &[u8]) {
+                    std::io::stderr()
+                        .write_all(message)
+                        .expect("Depth-test phase marker");
+                }
+                let root = tempfile::tempdir().unwrap();
+                let source = root.path().join("s");
+                let destination = root.path().join("out");
+                let rejected_destination = root.path().join("rejected");
+                fs::create_dir(&source).unwrap();
+                fs::create_dir(&destination).unwrap();
+                fs::create_dir(&rejected_destination).unwrap();
+                let mut deepest = source.clone();
+                for _ in 1..256 {
+                    deepest.push("d");
+                    fs::create_dir(&deepest).unwrap();
+                }
+                let bytes = vec![0x7b; 300_000];
+                fs::write(deepest.join("file.bin"), &bytes).unwrap();
+                let active = std::rc::Rc::new(std::cell::Cell::new(0usize));
+                let maximum = std::rc::Rc::new(std::cell::Cell::new(0usize));
+                let observed_active = active.clone();
+                let observed_max = maximum.clone();
+                phase(b"VELDIR depth256: before copy\n");
+                with_directory_copy_test_settings(
+                    MAX_DIRECTORY_GUARDS,
+                    move |stage, _| {
+                        if stage == CopyDirectoryStage::Validated {
+                            let count = observed_active.get() + 1;
+                            observed_active.set(count);
+                            observed_max.set(observed_max.get().max(count));
+                        } else if stage == CopyDirectoryStage::BeforeFinal {
+                            observed_active.set(observed_active.get() - 1);
+                        }
+                        Ok(())
+                    },
+                    || {
+                        execute(Job::Copy {
+                            source: source.clone(),
+                            destination_folder: destination.clone(),
+                        })
+                    },
+                )
+                .unwrap();
+                phase(b"VELDIR depth256: after copy\n");
+                assert_eq!(maximum.get(), 256);
+                assert_eq!(active.get(), 0);
+                let copied = destination
+                    .join("s")
+                    .join(deepest.strip_prefix(&source).unwrap())
+                    .join("file.bin");
+                assert_eq!(fs::read(copied).unwrap(), bytes);
+                assert_eq!(fs::read(deepest.join("file.bin")).unwrap(), bytes);
+                phase(b"VELDIR depth256: after verification\n");
+                fs::create_dir(deepest.join("too-deep")).unwrap();
+                let first = root.path().join("first.txt");
+                fs::write(&first, b"FIRST MUST NOT BE PUBLISHED").unwrap();
+                phase(b"VELDIR depth256: before depth257 preflight\n");
+                let error = execute(Job::CopyMany {
+                    sources: vec![first.clone(), source],
+                    destination_folder: rejected_destination.clone(),
+                })
+                .unwrap_err();
+                phase(b"VELDIR depth256: after depth257 preflight\n");
+                assert!(error.contains("massimo 256 directory"), "{error}");
+                assert_eq!(fs::read_dir(rejected_destination).unwrap().count(), 0);
+                assert_eq!(fs::read(first).unwrap(), b"FIRST MUST NOT BE PUBLISHED");
+                phase(b"VELDIR depth256: before fixture cleanup\n");
+                drop(root);
+                phase(b"VELDIR depth256: after fixture cleanup\n");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 
     #[cfg(windows)]
     fn assert_source_handle_allows_readers_and_denies_changes(source: &Path) {

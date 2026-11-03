@@ -25,6 +25,8 @@ Prima di contribuire, consultare la [checklist della Pull Request](.github/pull_
 
 ## 0.11 — gate di sicurezza dei trasferimenti (1 novembre 2026)
 
+Le directory sorgenti Windows mantengono un handle verificato durante enumerazione e copia dei discendenti. Il preflight e il copier limitano la profondità a 256 directory contemporanee; il buffer file è allocato sullo heap. Gli antenati esterni e il traversal basato sul percorso restano limiti aperti. [Guard directory e prove](docs/DIRECTORY_HANDLES_0_11.md).
+
 Le sorgenti regolari Windows vengono validate e lette dallo stesso handle con apertura protetta dell'ultimo componente e sharing conservativo. La protezione parte dall'apertura; non dimostra identità rispetto al preflight e non chiude le race delle directory antenate. [Ambito e test](docs/SOURCE_HANDLES_0_11.md).
 
 Il preflight comune copre anche le API dirette `execute(Copy/CopyMany)`, senza azzerare il budget fra elementi. Per annullamento esterno e progresso usare `execute_progress`; l'API sincrona resta sincrona. [Consolidamento entrypoint](docs/COPY_ENTRYPOINTS_0_11.md).

@@ -42,7 +42,7 @@ jobs:
             "$($_.Hash.ToLowerInvariant()) *veldir.exe" | Out-File -FilePath target\release\SHA256SUMS.txt -Encoding ascii
           }
       - name: Upload EXE and checksum
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Veldir-v0.9.0-Windows-x64
           path: |

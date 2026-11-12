@@ -15,7 +15,7 @@ trash = "5.2.9"
 opener = "0.9.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tempfile = "3"
-notify = { version = "=8.2.1", default-features = false }
+notify = { version = "=8.2.2", default-features = false }
 lopdf = { version = "=0.46.0", default-features = false }
 image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
 
